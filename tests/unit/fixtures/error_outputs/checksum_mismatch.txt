@@ -1,0 +1,4 @@
+sha256sum: WARNING: 1 computed checksum did NOT match
+install.sh: FAILED
+Expected: abc123def456789
+Actual: 987654321fedcba

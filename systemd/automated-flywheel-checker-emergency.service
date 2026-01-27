@@ -1,0 +1,39 @@
+[Unit]
+Description=Flywheel Checker Emergency Run (high priority)
+Documentation=https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/data/projects/agentic_coding_flywheel_setup
+
+# Higher priority for emergency runs
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=50
+
+# Emergency = more resources
+MemoryMax=8G
+CPUQuota=400%
+
+ExecStart=/data/projects/automated_flywheel_setup_checker/target/release/automated_flywheel_setup_checker check --all --json --priority emergency
+
+TimeoutStartSec=3600
+
+# Security hardening (same as main service)
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/log/flywheel-checker /var/run/flywheel-checker /data/projects
+ReadOnlyPaths=/etc/flywheel-checker
+NoNewPrivileges=true
+PrivateDevices=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=flywheel-checker-emergency

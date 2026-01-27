@@ -1,0 +1,29 @@
+[Unit]
+Description=Run Flywheel Checker Daily
+Documentation=https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup
+
+[Timer]
+# ===================================================================
+# SCHEDULE
+# ===================================================================
+# Run at 3 AM with 30 min random delay
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=1800
+
+# Catch up on missed runs (e.g., if machine was off)
+Persistent=true
+
+# Timer accuracy (1 minute is fine for daily runs)
+AccuracySec=1min
+
+# ===================================================================
+# ADDITIONAL SCHEDULES (optional)
+# ===================================================================
+# Run on boot with 5 minute delay
+OnBootSec=5min
+
+# Unit to activate
+Unit=automated-flywheel-checker.service
+
+[Install]
+WantedBy=timers.target

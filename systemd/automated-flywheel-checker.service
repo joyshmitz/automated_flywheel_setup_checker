@@ -1,0 +1,139 @@
+[Unit]
+Description=Automated Flywheel Setup Checker
+Documentation=https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+# Dependencies
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=notify
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/data/projects/agentic_coding_flywheel_setup
+
+# ===================================================================
+# WATCHDOG CONFIGURATION
+# ===================================================================
+# The service must ping the watchdog within this interval
+# If it doesn't, systemd will consider it hung
+WatchdogSec=300
+# What to do when watchdog times out
+WatchdogSignal=SIGABRT
+
+# ===================================================================
+# MAIN COMMAND
+# ===================================================================
+ExecStart=/data/projects/automated_flywheel_setup_checker/target/release/automated_flywheel_setup_checker check --all --json --watchdog
+
+# ===================================================================
+# RESTART POLICIES
+# ===================================================================
+Restart=on-failure
+RestartSec=60
+RestartPreventExitStatus=0
+# Maximum of 5 restarts in 10 minutes (see StartLimitIntervalSec/Burst above)
+
+# ===================================================================
+# TIMEOUTS
+# ===================================================================
+TimeoutStartSec=60
+TimeoutStopSec=30
+TimeoutAbortSec=30
+
+# ===================================================================
+# RESOURCE LIMITS (cgroup v2)
+# ===================================================================
+# Memory limits
+MemoryMax=4G
+MemoryHigh=3G
+MemorySwapMax=1G
+
+# CPU limits (200% = 2 cores max)
+CPUQuota=200%
+CPUWeight=100
+
+# I/O limits
+IOWeight=100
+IOReadBandwidthMax=/dev/sda 100M
+IOWriteBandwidthMax=/dev/sda 50M
+
+# Process limits
+TasksMax=256
+LimitNOFILE=65536
+LimitNPROC=512
+
+# ===================================================================
+# SECURITY HARDENING
+# ===================================================================
+# Filesystem restrictions
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/log/flywheel-checker /var/run/flywheel-checker /data/projects
+ReadOnlyPaths=/etc/flywheel-checker
+
+# Capability restrictions (drop all, add only what's needed)
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_DAC_OVERRIDE
+AmbientCapabilities=
+NoNewPrivileges=true
+
+# Namespace isolation
+PrivateDevices=true
+PrivateUsers=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+# System call filtering
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @file-system @network-io
+SystemCallFilter=~@privileged @resources @mount @clock @raw-io @reboot @swap
+
+# Restrict address families
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Restrict namespaces
+RestrictNamespaces=true
+
+# Memory protection
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+# ===================================================================
+# LOGGING
+# ===================================================================
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=flywheel-checker
+# Also write to files for easier parsing
+ExecStartPost=/bin/bash -c 'echo "[$(date -Iseconds)] Service started" >> /var/log/flywheel-checker/lifecycle.log'
+ExecStopPost=/bin/bash -c 'echo "[$(date -Iseconds)] Service stopped (result=$SERVICE_RESULT)" >> /var/log/flywheel-checker/lifecycle.log'
+
+# ===================================================================
+# ENVIRONMENT
+# ===================================================================
+Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=1
+Environment=ACFS_CONFIG=/etc/flywheel-checker/config.toml
+Environment=NOTIFY_SOCKET=/run/flywheel-checker/notify.sock
+
+# ===================================================================
+# NOTIFICATION ON FAILURE
+# ===================================================================
+ExecStopPost=/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/notify-flywheel-failure; fi'
+
+# ===================================================================
+# OOM HANDLING
+# ===================================================================
+OOMPolicy=stop
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

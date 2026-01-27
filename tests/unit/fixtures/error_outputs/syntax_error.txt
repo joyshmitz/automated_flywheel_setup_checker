@@ -1,0 +1,2 @@
+install.sh: line 42: syntax error near unexpected token `}'
+install.sh: line 42: `}'

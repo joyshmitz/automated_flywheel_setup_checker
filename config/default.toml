@@ -1,0 +1,65 @@
+# Automated Flywheel Setup Checker - Default Configuration
+
+[general]
+# Path to the ACFS repository
+acfs_repo = "/data/projects/agentic_coding_flywheel_setup"
+# Log level: trace, debug, info, warn, error
+log_level = "info"
+
+[docker]
+# Base Docker image for testing
+image = "ubuntu:22.04"
+# Memory limit for containers
+memory_limit = "2G"
+# CPU quota (1.0 = 1 full CPU)
+cpu_quota = 1.0
+# Timeout in seconds per installer test
+timeout_seconds = 300
+# Image pull policy: always, if-not-present, never
+pull_policy = "if-not-present"
+
+[execution]
+# Number of parallel installer tests (1 = sequential)
+parallel = 1
+# Number of retries for transient failures
+retry_transient = 3
+# Stop on first failure
+fail_fast = false
+
+[remediation]
+# Enable auto-remediation using Claude
+enabled = false
+# Auto-commit fixes (requires enabled=true)
+auto_commit = false
+# Create PRs for fixes (requires enabled=true)
+create_pr = true
+# Maximum remediation attempts per failure
+max_attempts = 3
+
+[notifications]
+# Enable failure notifications
+enabled = false
+# Slack webhook URL for notifications (leave empty to disable Slack)
+slack_webhook = ""
+# GitHub repo for auto-creating issues on failure (e.g., "owner/repo")
+github_issue_repo = ""
+# Email address for failure notifications (leave empty to disable email)
+email = ""
+
+[monitoring]
+# Enable health check endpoint
+health_endpoint = false
+# Health check port
+health_port = 8080
+# Enable metrics collection
+metrics_enabled = false
+# Metrics port (for Prometheus scraping)
+metrics_port = 9090
+
+[watchdog]
+# Systemd watchdog integration (auto-detected from WATCHDOG_USEC env)
+# This section provides fallback configuration when not running under systemd
+# Default ping interval in seconds (used if WATCHDOG_USEC not set)
+default_interval_seconds = 120
+# Log watchdog pings at debug level
+log_pings = false

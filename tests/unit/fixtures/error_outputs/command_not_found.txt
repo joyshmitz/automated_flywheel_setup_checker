@@ -1,0 +1,1 @@
+install.sh: line 15: jq: command not found

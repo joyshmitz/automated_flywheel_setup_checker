@@ -1,0 +1,9 @@
+{
+  "success": false,
+  "reason": "I cannot fix this issue automatically. Manual intervention required.",
+  "manual_steps": [
+    "Check network connectivity",
+    "Verify firewall settings",
+    "Contact system administrator"
+  ]
+}

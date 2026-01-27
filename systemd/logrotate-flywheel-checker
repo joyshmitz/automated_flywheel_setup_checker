@@ -1,0 +1,28 @@
+/var/log/flywheel-checker/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 ubuntu ubuntu
+    dateext
+    dateformat -%Y%m%d
+    sharedscripts
+    postrotate
+        systemctl kill -s HUP flywheel-checker.service 2>/dev/null || true
+    endscript
+}
+
+/var/log/flywheel-checker/*.jsonl {
+    daily
+    rotate 90
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 ubuntu ubuntu
+    dateext
+    dateformat -%Y%m%d
+    # JSONL logs don't need HUP signal
+}
