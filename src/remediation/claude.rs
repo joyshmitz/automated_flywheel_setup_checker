@@ -661,13 +661,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiter_refills() {
-        let rl = RateLimiter::new(1, 10, 1); // 10 tokens/sec refill
+        // Use 1 token/sec refill rate so the test has a clear timing window.
+        // With 1 token/sec, we need 1000ms to refill 1 token.
+        let rl = RateLimiter::new(1, 1, 1); // 1 token/sec refill
 
         assert!(rl.try_acquire().await.is_ok());
+        // With 1 token/sec, negligible time between calls won't refill
         assert!(rl.try_acquire().await.is_err());
 
-        // Wait for refill
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait for refill (1.1 seconds to ensure we get 1 token with 1 token/sec)
+        tokio::time::sleep(Duration::from_millis(1100)).await;
 
         // Should have tokens again
         assert!(rl.try_acquire().await.is_ok());
