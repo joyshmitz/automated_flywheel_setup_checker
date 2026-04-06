@@ -318,6 +318,218 @@ impl LogRotation {
     }
 }
 
+/// Persists test run results to JSONL files for later retrieval by the status command.
+///
+/// Results are written atomically (to a .tmp file, then renamed).
+pub struct ResultPersister {
+    results_dir: std::path::PathBuf,
+}
+
+/// A single test result line in the results JSONL file
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResultEntry {
+    pub timestamp: DateTime<Utc>,
+    pub installer_name: String,
+    pub status: String,
+    pub duration_ms: u64,
+    pub exit_code: Option<i32>,
+    pub error_classification: Option<ErrorClassificationEntry>,
+    pub stderr_excerpt: String,
+    pub retry_count: u32,
+    pub sha256_verified: bool,
+}
+
+/// Error classification summary for result entries
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ErrorClassificationEntry {
+    pub category: String,
+    pub severity: String,
+    pub retryable: bool,
+    pub confidence: f64,
+}
+
+/// Summary line written as the last entry in a results file
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunSummaryEntry {
+    pub run_id: String,
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub duration_total_ms: u64,
+    pub timestamp_start: DateTime<Utc>,
+    pub timestamp_end: DateTime<Utc>,
+}
+
+impl ResultPersister {
+    /// Create a new ResultPersister with the given results directory
+    pub fn new(results_dir: impl Into<std::path::PathBuf>) -> Self {
+        Self { results_dir: results_dir.into() }
+    }
+
+    /// Create with the default results directory (~/.local/share/afsc/results/)
+    pub fn default_dir() -> Self {
+        let dir = dirs_default_results_dir();
+        Self { results_dir: dir }
+    }
+
+    /// Ensure the results directory exists
+    fn ensure_dir(&self) -> Result<()> {
+        if !self.results_dir.exists() {
+            std::fs::create_dir_all(&self.results_dir)?;
+        }
+        Ok(())
+    }
+
+    /// Generate the results filename for this run
+    fn results_filename(&self) -> String {
+        let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+        format!("results_{}.jsonl", timestamp)
+    }
+
+    /// Write test results to a JSONL file atomically
+    ///
+    /// Returns the path to the written file.
+    pub fn persist(
+        &self,
+        results: &[crate::runner::TestResult],
+        run_id: &str,
+        started_at: DateTime<Utc>,
+    ) -> Result<std::path::PathBuf> {
+        self.ensure_dir()?;
+
+        let filename = self.results_filename();
+        let final_path = self.results_dir.join(&filename);
+        let tmp_path = self.results_dir.join(format!("{}.tmp", filename));
+
+        // Write to temp file
+        let file = std::fs::File::create(&tmp_path)?;
+        let mut writer = BufWriter::new(file);
+
+        for result in results {
+            let entry = ResultEntry {
+                timestamp: result.finished_at,
+                installer_name: result.installer_name.clone(),
+                status: format!("{:?}", result.status).to_lowercase(),
+                duration_ms: result.duration_ms,
+                exit_code: result.exit_code,
+                error_classification: result.error.as_ref().map(|e| ErrorClassificationEntry {
+                    category: e.category.clone(),
+                    severity: format!("{:?}", e.severity),
+                    retryable: e.retryable,
+                    confidence: e.confidence,
+                }),
+                stderr_excerpt: result.stderr.chars().take(500).collect(),
+                retry_count: result.retry_count(),
+                sha256_verified: result
+                    .checksum_result
+                    .as_ref()
+                    .map(|c| c.matches)
+                    .unwrap_or(false),
+            };
+            let json = serde_json::to_string(&entry)?;
+            writeln!(writer, "{}", json)?;
+        }
+
+        // Write summary line
+        let passed = results.iter().filter(|r| r.success).count();
+        let failed = results.iter().filter(|r| !r.success && !matches!(r.status, crate::runner::TestStatus::Skipped)).count();
+        let skipped = results.iter().filter(|r| matches!(r.status, crate::runner::TestStatus::Skipped)).count();
+        let total_ms: u64 = results.iter().map(|r| r.duration_ms).sum();
+
+        let summary = RunSummaryEntry {
+            run_id: run_id.to_string(),
+            total: results.len(),
+            passed,
+            failed,
+            skipped,
+            duration_total_ms: total_ms,
+            timestamp_start: started_at,
+            timestamp_end: Utc::now(),
+        };
+        let json = serde_json::to_string(&summary)?;
+        writeln!(writer, "{}", json)?;
+
+        writer.flush()?;
+        drop(writer);
+
+        // Atomic rename
+        std::fs::rename(&tmp_path, &final_path)?;
+
+        tracing::info!(
+            path = %final_path.display(),
+            total = results.len(),
+            passed = passed,
+            failed = failed,
+            "Test results persisted"
+        );
+
+        Ok(final_path)
+    }
+
+    /// Get the most recent results file
+    pub fn latest_results(&self) -> Result<Option<std::path::PathBuf>> {
+        if !self.results_dir.exists() {
+            return Ok(None);
+        }
+
+        let mut files: Vec<_> = std::fs::read_dir(&self.results_dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("results_") && n.ends_with(".jsonl"))
+                    .unwrap_or(false)
+            })
+            .map(|e| e.path())
+            .collect();
+
+        files.sort_by(|a, b| b.cmp(a)); // newest first
+        Ok(files.into_iter().next())
+    }
+
+    /// Read results from a file, returning (entries, summary)
+    pub fn read_results(
+        path: &std::path::Path,
+    ) -> Result<(Vec<ResultEntry>, Option<RunSummaryEntry>)> {
+        let content = std::fs::read_to_string(path)?;
+        let lines: Vec<&str> = content.lines().collect();
+
+        let mut entries = Vec::new();
+        let mut summary = None;
+
+        for line in &lines {
+            if line.trim().is_empty() {
+                continue;
+            }
+            // Try to parse as summary first (has run_id field)
+            if let Ok(s) = serde_json::from_str::<RunSummaryEntry>(line) {
+                summary = Some(s);
+            } else if let Ok(e) = serde_json::from_str::<ResultEntry>(line) {
+                entries.push(e);
+            }
+        }
+
+        Ok((entries, summary))
+    }
+
+    /// Get the results directory path
+    pub fn results_dir(&self) -> &std::path::Path {
+        &self.results_dir
+    }
+}
+
+/// Default results directory
+fn dirs_default_results_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("afsc")
+        .join("results")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

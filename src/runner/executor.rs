@@ -1,9 +1,10 @@
-//! Actual installer execution logic
+//! Installer execution logic with Docker and local backends
 //!
 //! This module implements the core test runner that executes installer scripts
-//! in isolated temp directories and captures results.
+//! either inside Docker containers (default) or in isolated local temp directories.
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -12,21 +13,45 @@ use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
-use super::installer::{InstallerTest, TestResult, TestStatus};
+use super::container::{ContainerConfig, ContainerGuard, ContainerManager, PullPolicy};
+use super::installer::{ChecksumResult, InstallerTest, TestResult, TestStatus};
+
+/// Execution backend selection
+#[derive(Debug, Clone)]
+pub enum ExecutionBackend {
+    /// Run installers inside Docker containers (default, recommended)
+    Docker {
+        container_config: ContainerConfig,
+        pull_policy: PullPolicy,
+    },
+    /// Run installers locally in temp directories (fallback)
+    Local,
+}
+
+impl Default for ExecutionBackend {
+    fn default() -> Self {
+        ExecutionBackend::Docker {
+            container_config: ContainerConfig::default(),
+            pull_policy: PullPolicy::IfNotPresent,
+        }
+    }
+}
 
 /// Configuration for the installer test runner
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
     /// Default timeout for tests
     pub default_timeout: Duration,
-    /// Whether to run in dry-run mode (--dry-run flag)
+    /// Whether to run in dry-run mode (--dry-run flag passed to installer)
     pub dry_run: bool,
-    /// Path to curl binary
+    /// Path to curl binary (used in both backends)
     pub curl_path: String,
-    /// Path to bash binary
+    /// Path to bash binary (used in both backends)
     pub bash_path: String,
     /// Additional environment variables to set
     pub extra_env: Vec<(String, String)>,
+    /// Execution backend
+    pub backend: ExecutionBackend,
 }
 
 impl Default for RunnerConfig {
@@ -37,6 +62,10 @@ impl Default for RunnerConfig {
             curl_path: "curl".to_string(),
             bash_path: "bash".to_string(),
             extra_env: Vec::new(),
+            backend: ExecutionBackend::Docker {
+                container_config: ContainerConfig::default(),
+                pull_policy: PullPolicy::IfNotPresent,
+            },
         }
     }
 }
@@ -51,42 +80,364 @@ impl InstallerTestRunner {
         Self { config }
     }
 
-    /// Run an installer test and capture results
+    /// Build a shell script that downloads, verifies checksum, and executes the installer.
     ///
-    /// This creates a temp directory, downloads and runs the installer script,
-    /// captures stdout/stderr, and cleans up afterward.
+    /// When expected_sha256 is provided, the script:
+    ///   1. Downloads to a temp file
+    ///   2. Computes SHA256 and compares
+    ///   3. Only executes if checksum matches (or exits 99 on mismatch)
+    ///
+    /// When no checksum is expected, falls back to curl|bash for simplicity.
+    fn build_verified_install_script(
+        &self,
+        url: &str,
+        installer_name: &str,
+        expected_sha256: Option<&str>,
+    ) -> String {
+        let dry_run_flag = if self.config.dry_run { " --dry-run" } else { "" };
+
+        match expected_sha256 {
+            Some(expected) => {
+                // Download → verify → execute script
+                let script_path = format!("/tmp/installer_{}.sh", installer_name);
+                format!(
+                    r#"set -e
+{curl} -fsSL '{url}' -o '{path}'
+ACTUAL=$(sha256sum '{path}' | cut -d' ' -f1)
+if [ "$ACTUAL" != "{expected}" ]; then
+  echo "CHECKSUM_MISMATCH: expected={expected} actual=$ACTUAL url={url}" >&2
+  exit 99
+fi
+{bash} '{path}'{flags}"#,
+                    curl = self.config.curl_path,
+                    url = url,
+                    path = script_path,
+                    expected = expected,
+                    bash = self.config.bash_path,
+                    flags = dry_run_flag,
+                )
+            }
+            None => {
+                // No checksum — use curl|bash directly
+                format!(
+                    "{} -fsSL '{}' | {} -s --{}",
+                    self.config.curl_path, url, self.config.bash_path, dry_run_flag
+                )
+            }
+        }
+    }
+
+    /// Parse checksum result from stderr output (looks for CHECKSUM_MISMATCH marker)
+    fn parse_checksum_result(
+        &self,
+        stderr: &str,
+        exit_code: i32,
+        url: &str,
+        expected_sha256: Option<&str>,
+        download_ms: u64,
+    ) -> Option<ChecksumResult> {
+        let expected = expected_sha256?;
+
+        if exit_code == 99 && stderr.contains("CHECKSUM_MISMATCH") {
+            // Extract actual hash from the error message
+            let actual = stderr
+                .lines()
+                .find(|l| l.contains("CHECKSUM_MISMATCH"))
+                .and_then(|l| l.split("actual=").nth(1))
+                .map(|s| s.split_whitespace().next().unwrap_or("unknown"))
+                .unwrap_or("unknown")
+                .to_string();
+
+            Some(ChecksumResult {
+                matches: false,
+                expected: expected.to_string(),
+                actual,
+                url: url.to_string(),
+                download_ms,
+                size_bytes: 0,
+            })
+        } else {
+            // Checksum passed (or wasn't checked due to download failure)
+            Some(ChecksumResult {
+                matches: true,
+                expected: expected.to_string(),
+                actual: expected.to_string(),
+                url: url.to_string(),
+                download_ms,
+                size_bytes: 0,
+            })
+        }
+    }
+
+    /// Determine timeout for a test
+    fn test_timeout(&self, test: &InstallerTest) -> Duration {
+        if test.timeout.as_secs() > 0 {
+            test.timeout
+        } else {
+            self.config.default_timeout
+        }
+    }
+
+    /// Run an installer test using the configured backend
     pub async fn run_test(&self, test: &InstallerTest) -> Result<TestResult> {
+        match &self.config.backend {
+            ExecutionBackend::Docker { container_config, pull_policy } => {
+                self.run_test_docker(test, container_config, pull_policy).await
+            }
+            ExecutionBackend::Local => self.run_test_local(test).await,
+        }
+    }
+
+    /// Run an installer test inside a Docker container
+    async fn run_test_docker(
+        &self,
+        test: &InstallerTest,
+        container_config: &ContainerConfig,
+        pull_policy: &PullPolicy,
+    ) -> Result<TestResult> {
+        let mut result = TestResult::new(&test.name);
+        let start_time = Instant::now();
+        let test_timeout = self.test_timeout(test);
+
+        info!(
+            installer = %test.name,
+            url = %test.url,
+            backend = "docker",
+            "Starting installer test"
+        );
+
+        // Build container config with test-specific environment
+        let mut config = container_config.clone();
+        // Add test-specific environment
+        for (key, value) in &test.environment {
+            config.environment.push((key.clone(), value.clone()));
+        }
+        // Add runner extra environment
+        for (key, value) in &self.config.extra_env {
+            config.environment.push((key.clone(), value.clone()));
+        }
+
+        // Create container manager and container
+        let manager =
+            ContainerManager::new(config).with_pull_policy(pull_policy.clone());
+
+        let container_id = manager
+            .create_container(&test.name)
+            .await
+            .context("Failed to create Docker container")?;
+
+        // Set up guard for cleanup on early return/panic
+        let mut guard = ContainerGuard::new(container_id.clone(), manager.docker_arc());
+        result = result.with_container_id(&container_id);
+
+        // Build the verified install script (download → checksum → execute)
+        let install_script = self.build_verified_install_script(
+            &test.url,
+            &test.name,
+            test.expected_sha256.as_deref(),
+        );
+        debug!(
+            container_id = %container_id,
+            has_checksum = test.expected_sha256.is_some(),
+            "Executing installer in container"
+        );
+
+        // Execute with timeout
+        let exec_result = timeout(
+            test_timeout,
+            manager.exec_in_container(&container_id, &["bash", "-c", &install_script]),
+        )
+        .await;
+
+        match exec_result {
+            Ok(Ok((exit_code, stdout, stderr))) => {
+                let elapsed = start_time.elapsed();
+                result.stdout = stdout;
+                result.stderr = stderr.clone();
+                result.exit_code = Some(exit_code);
+                result.duration = elapsed;
+                result.duration_ms = elapsed.as_millis() as u64;
+
+                // Parse checksum result
+                if let Some(checksum_result) = self.parse_checksum_result(
+                    &stderr,
+                    exit_code,
+                    &test.url,
+                    test.expected_sha256.as_deref(),
+                    elapsed.as_millis() as u64,
+                ) {
+                    if !checksum_result.matches {
+                        warn!(
+                            installer = %test.name,
+                            expected = %checksum_result.expected,
+                            actual = %checksum_result.actual,
+                            "Checksum mismatch — installer NOT executed"
+                        );
+                        result.status = TestStatus::Failed;
+                        result.success = false;
+                        result = result.with_checksum_result(checksum_result);
+                        // Clean up and return early — do NOT consider this retryable
+                        guard.cleanup().await;
+                        result.finished_at = chrono::Utc::now();
+                        return Ok(result);
+                    }
+                    result = result.with_checksum_result(checksum_result);
+                }
+
+                if exit_code == 0 {
+                    info!(
+                        installer = %test.name,
+                        container_id = %container_id,
+                        duration_ms = elapsed.as_millis(),
+                        "Installer test passed"
+                    );
+                    result.status = TestStatus::Passed;
+                    result.success = true;
+                } else {
+                    warn!(
+                        installer = %test.name,
+                        container_id = %container_id,
+                        exit_code = exit_code,
+                        duration_ms = elapsed.as_millis(),
+                        "Installer test failed"
+                    );
+                    result.status = TestStatus::Failed;
+                    result.success = false;
+                }
+            }
+            Ok(Err(e)) => {
+                let elapsed = start_time.elapsed();
+                warn!(
+                    installer = %test.name,
+                    container_id = %container_id,
+                    error = %e,
+                    "Installer execution error in container"
+                );
+                result.stderr = format!("Container execution error: {}", e);
+                result.status = TestStatus::Failed;
+                result.success = false;
+                result.duration = elapsed;
+                result.duration_ms = elapsed.as_millis() as u64;
+            }
+            Err(_) => {
+                warn!(
+                    installer = %test.name,
+                    container_id = %container_id,
+                    timeout_seconds = test_timeout.as_secs(),
+                    "Installer test timed out in container"
+                );
+                result.status = TestStatus::TimedOut;
+                result.success = false;
+                result.stderr = format!("Test timed out after {:?}", test_timeout);
+                result.duration = test_timeout;
+                result.duration_ms = test_timeout.as_millis() as u64;
+            }
+        }
+
+        // Always clean up the container
+        guard.cleanup().await;
+        result.finished_at = chrono::Utc::now();
+        Ok(result)
+    }
+
+    /// Run an installer test locally in an isolated temp directory (fallback)
+    async fn run_test_local(&self, test: &InstallerTest) -> Result<TestResult> {
         let mut result = TestResult::new(&test.name);
         let start_time = Instant::now();
 
-        info!(installer = %test.name, url = %test.url, "Starting installer test");
+        info!(
+            installer = %test.name,
+            url = %test.url,
+            backend = "local",
+            "Starting installer test"
+        );
 
         // Create isolated temp directory
         let temp_dir = TempDir::new().context("Failed to create temp directory")?;
         let temp_path = temp_dir.path().to_path_buf();
         debug!(path = ?temp_path, "Created temp directory");
 
-        // Determine timeout
-        let test_timeout = if test.timeout.as_secs() > 0 {
-            test.timeout
-        } else {
-            self.config.default_timeout
-        };
+        let test_timeout = self.test_timeout(test);
 
-        // Build the command: curl -fsSL $URL | bash -s -- [--dry-run]
-        let curl_bash_script = if self.config.dry_run {
-            format!(
-                "{} -fsSL '{}' | {} -s -- --dry-run",
-                self.config.curl_path, test.url, self.config.bash_path
-            )
-        } else {
-            format!(
-                "{} -fsSL '{}' | {} -s --",
-                self.config.curl_path, test.url, self.config.bash_path
-            )
-        };
+        // If we have an expected checksum, download and verify locally first
+        if let Some(expected_sha256) = &test.expected_sha256 {
+            let script_file = temp_path.join(format!("installer_{}.sh", test.name));
+            let download_start = Instant::now();
 
-        debug!(script = %curl_bash_script, "Executing installer script");
+            // Download the script
+            let dl_output = Command::new(&self.config.curl_path)
+                .args(["-fsSL", &test.url, "-o"])
+                .arg(&script_file)
+                .output()
+                .await
+                .context("Failed to download installer script")?;
+
+            let download_ms = download_start.elapsed().as_millis() as u64;
+
+            if !dl_output.status.success() {
+                let stderr = String::from_utf8_lossy(&dl_output.stderr).to_string();
+                result.stderr = format!("Download failed: {}", stderr);
+                result.status = TestStatus::Failed;
+                result.success = false;
+                result.finished_at = chrono::Utc::now();
+                return Ok(result);
+            }
+
+            // Compute SHA256
+            let file_bytes =
+                tokio::fs::read(&script_file).await.context("Failed to read downloaded script")?;
+            let mut hasher = Sha256::new();
+            hasher.update(&file_bytes);
+            let actual_hash = hex::encode(hasher.finalize());
+            let size_bytes = file_bytes.len() as u64;
+
+            let checksum_result = ChecksumResult {
+                matches: actual_hash == *expected_sha256,
+                expected: expected_sha256.clone(),
+                actual: actual_hash.clone(),
+                url: test.url.clone(),
+                download_ms,
+                size_bytes,
+            };
+
+            if !checksum_result.matches {
+                warn!(
+                    installer = %test.name,
+                    expected = %expected_sha256,
+                    actual = %actual_hash,
+                    "Checksum mismatch — installer NOT executed"
+                );
+                result.stderr = format!(
+                    "CHECKSUM_MISMATCH: expected={} actual={} url={}",
+                    expected_sha256, actual_hash, test.url
+                );
+                result.exit_code = Some(99);
+                result.status = TestStatus::Failed;
+                result.success = false;
+                result = result.with_checksum_result(checksum_result);
+                result.finished_at = chrono::Utc::now();
+                result.duration = start_time.elapsed();
+                result.duration_ms = result.duration.as_millis() as u64;
+                return Ok(result);
+            }
+
+            info!(
+                installer = %test.name,
+                hash = %actual_hash,
+                size = size_bytes,
+                "Checksum verified — executing installer"
+            );
+            result = result.with_checksum_result(checksum_result);
+        }
+
+        // Build the install script (verified or direct)
+        let curl_bash_script = self.build_verified_install_script(
+            &test.url,
+            &test.name,
+            test.expected_sha256.as_deref(),
+        );
+
+        debug!(script = %curl_bash_script, "Executing installer script locally");
 
         // Create the command
         let mut cmd = Command::new(&self.config.bash_path);
@@ -98,8 +449,14 @@ impl InstallerTestRunner {
             .env("XDG_CONFIG_HOME", temp_path.join(".config"))
             .env("XDG_DATA_HOME", temp_path.join(".local/share"))
             .env("XDG_CACHE_HOME", temp_path.join(".cache"))
-            // Restrict PATH to essential system directories
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env(
+                "PATH",
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            )
+            .env("DEBIAN_FRONTEND", "noninteractive")
+            .env("NONINTERACTIVE", "1")
+            .env("CI", "true")
+            .env("RUSTUP_INIT_SKIP_PATH_CHECK", "yes")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -125,7 +482,6 @@ impl InstallerTestRunner {
             let mut stdout_buf = Vec::new();
             let mut stderr_buf = Vec::new();
 
-            // Read both streams concurrently
             let (stdout_result, stderr_result) = tokio::join!(
                 stdout_handle.read_to_end(&mut stdout_buf),
                 stderr_handle.read_to_end(&mut stderr_buf)
@@ -134,14 +490,12 @@ impl InstallerTestRunner {
             stdout_result.context("Failed to read stdout")?;
             stderr_result.context("Failed to read stderr")?;
 
-            // Wait for process to complete
             let status = child.wait().await.context("Failed to wait for process")?;
 
             Ok::<_, anyhow::Error>((status, stdout_buf, stderr_buf))
         })
         .await;
 
-        // Handle the result
         match execution_result {
             Ok(Ok((status, stdout_buf, stderr_buf))) => {
                 let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
@@ -150,7 +504,7 @@ impl InstallerTestRunner {
                 let elapsed = start_time.elapsed();
 
                 result.stdout = stdout;
-                result.stderr = stderr.clone();
+                result.stderr = stderr;
                 result.exit_code = Some(exit_code);
                 result.duration = elapsed;
                 result.duration_ms = elapsed.as_millis() as u64;
@@ -159,7 +513,7 @@ impl InstallerTestRunner {
                     info!(
                         installer = %test.name,
                         duration_ms = elapsed.as_millis(),
-                        "Installer test passed"
+                        "Installer test passed (local)"
                     );
                     result.status = TestStatus::Passed;
                     result.success = true;
@@ -168,27 +522,25 @@ impl InstallerTestRunner {
                         installer = %test.name,
                         exit_code = exit_code,
                         duration_ms = elapsed.as_millis(),
-                        "Installer test failed"
+                        "Installer test failed (local)"
                     );
                     result.status = TestStatus::Failed;
                     result.success = false;
                 }
             }
             Ok(Err(e)) => {
-                warn!(installer = %test.name, error = %e, "Installer execution error");
+                warn!(installer = %test.name, error = %e, "Installer execution error (local)");
                 result.stderr = format!("Execution error: {}", e);
                 result.status = TestStatus::Failed;
                 result.success = false;
             }
             Err(_) => {
-                // Timeout occurred - kill the process
                 warn!(
                     installer = %test.name,
                     timeout_seconds = test_timeout.as_secs(),
-                    "Installer test timed out"
+                    "Installer test timed out (local)"
                 );
 
-                // Try to kill the process
                 if let Err(e) = child.kill().await {
                     debug!(error = %e, "Failed to kill timed-out process");
                 }
@@ -201,14 +553,12 @@ impl InstallerTestRunner {
             }
         }
 
-        // Temp directory is automatically cleaned up when TempDir is dropped
         debug!(path = ?temp_path, "Cleaning up temp directory");
-
         result.finished_at = chrono::Utc::now();
         Ok(result)
     }
 
-    /// Run a test with retries
+    /// Run a test with retries (each retry creates a fresh container in Docker mode)
     pub async fn run_test_with_retry(&self, test: &InstallerTest) -> Result<TestResult> {
         let mut result = self.run_test(test).await?;
         let mut attempts = 1;
@@ -258,17 +608,29 @@ mod tests {
         assert!(!config.dry_run);
         assert_eq!(config.curl_path, "curl");
         assert_eq!(config.bash_path, "bash");
+        assert!(matches!(config.backend, ExecutionBackend::Docker { .. }));
+    }
+
+    #[test]
+    fn test_runner_config_local_backend() {
+        let config = RunnerConfig {
+            backend: ExecutionBackend::Local,
+            ..Default::default()
+        };
+        assert!(matches!(config.backend, ExecutionBackend::Local));
     }
 
     #[test]
     fn test_backoff_calculation() {
-        let runner = InstallerTestRunner::new(RunnerConfig::default());
+        let config = RunnerConfig {
+            backend: ExecutionBackend::Local,
+            ..Default::default()
+        };
+        let runner = InstallerTestRunner::new(config);
 
-        // First retry should be around 2 seconds (with some jitter)
         let backoff1 = runner.calculate_backoff(1);
         assert!(backoff1 >= 2000 && backoff1 <= 3000);
 
-        // Second retry should be around 4 seconds
         let backoff2 = runner.calculate_backoff(2);
         assert!(backoff2 >= 4000 && backoff2 <= 6000);
     }
@@ -276,47 +638,105 @@ mod tests {
     #[test]
     fn test_dry_run_false_does_not_append_flag() {
         // Regression (br-74o.13): When dry_run is false, the curl|bash command
-        // must NOT contain --dry-run. A previous bug hardcoded dry_run: true,
-        // causing bun's installer to 404 by interpreting --dry-run as a version.
-        let config = RunnerConfig { dry_run: false, ..Default::default() };
-        let script = if config.dry_run {
-            format!("{} -fsSL '{}' | {} -s -- --dry-run", config.curl_path, "URL", config.bash_path)
-        } else {
-            format!("{} -fsSL '{}' | {} -s --", config.curl_path, "URL", config.bash_path)
+        // must NOT contain --dry-run.
+        let config = RunnerConfig {
+            dry_run: false,
+            backend: ExecutionBackend::Local,
+            ..Default::default()
         };
-        assert!(!script.contains("--dry-run"), "Command must not contain --dry-run when dry_run=false");
+        let runner = InstallerTestRunner::new(config);
+        let cmd = runner.build_verified_install_script("https://example.com/install.sh", "test", None);
+        assert!(
+            !cmd.contains("--dry-run"),
+            "Command must not contain --dry-run when dry_run=false"
+        );
     }
 
     #[test]
     fn test_dry_run_true_appends_flag() {
-        let config = RunnerConfig { dry_run: true, ..Default::default() };
-        let script = if config.dry_run {
-            format!("{} -fsSL '{}' | {} -s -- --dry-run", config.curl_path, "URL", config.bash_path)
-        } else {
-            format!("{} -fsSL '{}' | {} -s --", config.curl_path, "URL", config.bash_path)
+        let config = RunnerConfig {
+            dry_run: true,
+            backend: ExecutionBackend::Local,
+            ..Default::default()
         };
-        assert!(script.contains("--dry-run"), "Command must contain --dry-run when dry_run=true");
+        let runner = InstallerTestRunner::new(config);
+        let cmd = runner.build_verified_install_script("https://example.com/install.sh", "test", None);
+        assert!(
+            cmd.contains("--dry-run"),
+            "Command must contain --dry-run when dry_run=true"
+        );
+    }
+
+    #[test]
+    fn test_build_install_command_format() {
+        let config = RunnerConfig {
+            dry_run: false,
+            backend: ExecutionBackend::Local,
+            ..Default::default()
+        };
+        let runner = InstallerTestRunner::new(config);
+        let cmd = runner.build_verified_install_script("https://example.com/install.sh", "test", None);
+        assert!(cmd.contains("curl -fsSL"));
+        assert!(cmd.contains("https://example.com/install.sh"));
+        assert!(cmd.contains("| bash -s --"));
+    }
+
+    #[test]
+    fn test_build_verified_script_with_checksum() {
+        let config = RunnerConfig {
+            dry_run: false,
+            backend: ExecutionBackend::Local,
+            ..Default::default()
+        };
+        let runner = InstallerTestRunner::new(config);
+        let cmd = runner.build_verified_install_script(
+            "https://example.com/install.sh",
+            "myinstaller",
+            Some("abc123def456"),
+        );
+        // Should download to temp file, not pipe to bash
+        assert!(cmd.contains("-o '/tmp/installer_myinstaller.sh'"));
+        assert!(cmd.contains("sha256sum"));
+        assert!(cmd.contains("abc123def456"));
+        assert!(cmd.contains("CHECKSUM_MISMATCH"));
+        assert!(cmd.contains("exit 99"));
+        // Should NOT contain pipe to bash
+        assert!(!cmd.contains("| bash"));
+    }
+
+    #[test]
+    fn test_build_verified_script_without_checksum() {
+        let config = RunnerConfig {
+            dry_run: false,
+            backend: ExecutionBackend::Local,
+            ..Default::default()
+        };
+        let runner = InstallerTestRunner::new(config);
+        let cmd = runner.build_verified_install_script(
+            "https://example.com/install.sh",
+            "myinstaller",
+            None,
+        );
+        // Without checksum, should use curl|bash directly
+        assert!(cmd.contains("| bash"));
+        assert!(!cmd.contains("sha256sum"));
     }
 
     #[tokio::test]
-    async fn test_runner_with_simple_command() {
+    async fn test_runner_local_with_simple_command() {
         let config = RunnerConfig {
             dry_run: false,
+            backend: ExecutionBackend::Local,
             ..Default::default()
         };
         let runner = InstallerTestRunner::new(config);
 
-        // Test with a URL that should fail (example.com returns HTML, not a script)
         let test = InstallerTest::new("test-echo", "https://example.com/nonexistent.sh")
             .with_timeout(std::time::Duration::from_secs(10));
 
-        // This exercises the execution path
         let result = runner.run_test(&test).await;
         assert!(result.is_ok());
         let result = result.unwrap();
-        // Note: The test may succeed or fail depending on network conditions
-        // and what example.com returns. The important thing is that the
-        // runner completes without panicking.
         assert!(result.duration_ms > 0 || result.status == TestStatus::TimedOut);
     }
 }

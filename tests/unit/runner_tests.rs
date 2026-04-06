@@ -5,10 +5,12 @@
 //! - InstallerTest configuration
 //! - Retry logic and backoff
 //! - Container configuration
+//! - SHA256 checksum verification
+//! - Execution backend selection
 
 use automated_flywheel_setup_checker::runner::{
     ContainerConfig, ContainerManager, InstallerTest, ParallelRunner, RetryConfig, RetryStrategy,
-    TestResult, TestStatus,
+    RunnerConfig, TestResult, TestStatus,
 };
 use std::time::Duration;
 
@@ -381,6 +383,82 @@ fn test_installer_test_no_dry_run_in_default_config() {
         !config.dry_run,
         "Default config must not pass --dry-run to installer scripts"
     );
+}
+
+// ============================================================================
+// SHA256 Checksum Verification Tests (br-74o.17)
+// ============================================================================
+
+use automated_flywheel_setup_checker::runner::ExecutionBackend;
+
+#[test]
+fn test_checksum_result_fields() {
+    use automated_flywheel_setup_checker::runner::TestResult;
+
+    let checksum = automated_flywheel_setup_checker::runner::ChecksumResult {
+        matches: true,
+        expected: "abc123".to_string(),
+        actual: "abc123".to_string(),
+        url: "https://example.com/install.sh".to_string(),
+        download_ms: 150,
+        size_bytes: 4096,
+    };
+
+    let result = TestResult::new("test").with_checksum_result(checksum.clone());
+    assert!(result.checksum_result.is_some());
+    let cr = result.checksum_result.unwrap();
+    assert!(cr.matches);
+    assert_eq!(cr.expected, "abc123");
+    assert_eq!(cr.actual, "abc123");
+    assert_eq!(cr.download_ms, 150);
+    assert_eq!(cr.size_bytes, 4096);
+}
+
+#[test]
+fn test_checksum_result_mismatch() {
+    let checksum = automated_flywheel_setup_checker::runner::ChecksumResult {
+        matches: false,
+        expected: "expected_hash".to_string(),
+        actual: "different_hash".to_string(),
+        url: "https://example.com/install.sh".to_string(),
+        download_ms: 100,
+        size_bytes: 2048,
+    };
+
+    assert!(!checksum.matches);
+    assert_ne!(checksum.expected, checksum.actual);
+}
+
+#[test]
+fn test_sha256_none_skips_verification() {
+    // When no expected hash is provided, checksum_result should be None
+    let test = InstallerTest::new("test", "https://example.com/install.sh");
+    assert!(test.expected_sha256.is_none());
+
+    let result = TestResult::new("test");
+    assert!(result.checksum_result.is_none());
+}
+
+#[test]
+fn test_installer_test_with_sha256_sets_expected() {
+    let test =
+        InstallerTest::new("test", "https://example.com").with_sha256("deadbeef01234567");
+    assert_eq!(test.expected_sha256, Some("deadbeef01234567".to_string()));
+}
+
+#[test]
+fn test_execution_backend_default_is_docker() {
+    let config = automated_flywheel_setup_checker::runner::RunnerConfig::default();
+    assert!(matches!(config.backend, ExecutionBackend::Docker { .. }));
+}
+
+#[test]
+fn test_execution_backend_local() {
+    let config = automated_flywheel_setup_checker::runner::RunnerConfig {
+        backend: ExecutionBackend::Local,
+        ..Default::default()
+    };
+    assert!(matches!(config.backend, ExecutionBackend::Local));
 }
 
 // ============================================================================
