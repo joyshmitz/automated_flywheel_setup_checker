@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
 
       - uses: Swatinem/rust-cache@v2
 
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
 
       - uses: Swatinem/rust-cache@v2
 
@@ -79,9 +79,11 @@ jobs:
       - name: Run E2E test suite
         run: |
           chmod +x scripts/e2e/run_all_tests.sh
-          E2E_VERBOSE=1 E2E_TIMEOUT=600 ./scripts/e2e/run_all_tests.sh
+          ./scripts/e2e/run_all_tests.sh
         env:
-          E2E_SKIP_PREFLIGHT: 0
+          E2E_VERBOSE: "1"
+          E2E_TIMEOUT: "600"
+          E2E_SKIP_PREFLIGHT: "0"
 
       - name: Upload test logs
         if: always()

@@ -2,8 +2,8 @@
 
 <div align="center">
 
-[![CI](https://github.com/Dicklesworthstone/automated_flywheel_setup_checker/actions/workflows/ci.yml/badge.svg)](https://github.com/Dicklesworthstone/automated_flywheel_setup_checker/actions/workflows/ci.yml)
-[![E2E Tests](https://github.com/Dicklesworthstone/automated_flywheel_setup_checker/actions/workflows/e2e-tests.yml/badge.svg)](https://github.com/Dicklesworthstone/automated_flywheel_setup_checker/actions/workflows/e2e-tests.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/Dicklesworthstone/automated_flywheel_setup_checker/ci.yml?style=for-the-badge&label=CI)](https://github.com/Dicklesworthstone/automated_flywheel_setup_checker/actions/workflows/ci.yml)
+[![E2E Tests](https://img.shields.io/github/actions/workflow/status/Dicklesworthstone/automated_flywheel_setup_checker/e2e-tests.yml?style=for-the-badge&label=E2E)](https://github.com/Dicklesworthstone/automated_flywheel_setup_checker/actions/workflows/e2e-tests.yml)
 ![Version](https://img.shields.io/badge/Version-0.1.0-bd93f9?style=for-the-badge)
 ![Language](https://img.shields.io/badge/Language-Rust-f74c00?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
@@ -107,7 +107,7 @@ cargo install --git https://github.com/Dicklesworthstone/automated_flywheel_setu
 
 ### Requirements
 
-- **Rust** 1.75+ (nightly pinned via `rust-toolchain.toml`)
+- **Rust nightly** (pinned via `rust-toolchain.toml`; automatically installed by `rustup`)
 - **Docker** (for running isolated installer tests)
 - **ACFS repository** cloned locally (default: `/data/projects/agentic_coding_flywheel_setup`)
 
