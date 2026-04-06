@@ -140,8 +140,56 @@ jobs:
       - name: Test config default
         run: ./target/release/automated_flywheel_setup_checker config default
 
-      - name: Test classify-error
+      - name: Test classify-error (network)
         run: |
           ./target/release/automated_flywheel_setup_checker classify-error \
             --stderr "curl: (7) Failed to connect: Connection refused" \
             --exit-code 7
+
+      - name: Test classify-error (permission)
+        run: |
+          ./target/release/automated_flywheel_setup_checker classify-error \
+            --stderr "Permission denied" \
+            --exit-code 126
+
+      - name: Test classify-error (command not found)
+        run: |
+          ./target/release/automated_flywheel_setup_checker classify-error \
+            --stderr "bash: jq: command not found" \
+            --exit-code 127
+
+      - name: Test classify-error (dependency)
+        run: |
+          ./target/release/automated_flywheel_setup_checker classify-error \
+            --stderr "E: Unable to locate package foo" \
+            --exit-code 100
+
+      - name: Test classify-error (resource)
+        run: |
+          ./target/release/automated_flywheel_setup_checker classify-error \
+            --stderr "No space left on device" \
+            --exit-code 1
+
+      - name: Test classify-error (JSON format)
+        run: |
+          ./target/release/automated_flywheel_setup_checker classify-error \
+            --stderr "Connection timed out" \
+            --exit-code 28 \
+            --format json | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['retryable']"
+
+      - name: Test status command
+        run: ./target/release/automated_flywheel_setup_checker status
+
+      - name: Test check --dry-run --local
+        run: |
+          # Create minimal checksums.yaml for dry-run test
+          mkdir -p /tmp/afsc-test
+          cat > /tmp/afsc-test/checksums.yaml << 'YAML'
+          test_tool:
+            url: "https://example.com/install.sh"
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+            enabled: true
+          YAML
+          ./target/release/automated_flywheel_setup_checker \
+            --config /dev/null \
+            check --dry-run --local 2>&1 || true

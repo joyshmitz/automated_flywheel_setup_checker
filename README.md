@@ -136,6 +136,7 @@ automated_flywheel_setup_checker check --timeout 600        # 10min timeout per 
 automated_flywheel_setup_checker check --remediate          # Enable Claude auto-fix
 automated_flywheel_setup_checker check --fail-fast          # Stop on first failure
 automated_flywheel_setup_checker check --dry-run            # Preview without executing
+automated_flywheel_setup_checker check --local              # Run locally (no Docker)
 ```
 
 ### `list` — Show Available Installers
@@ -352,6 +353,7 @@ The E2E tests require Docker-in-Docker. Ensure the CI workflow has the `docker:d
 - **Claude remediation is experimental** — auto-fix suggestions require an API key and may not always be actionable. Safety checks prevent dangerous commands.
 - **No post-install validation** — verifies the installer runs successfully but doesn't test that the installed tool actually works correctly.
 - **Single Ubuntu version** — defaults to `ubuntu:22.04`. Testing across multiple Ubuntu versions requires manual config changes.
+- **Local mode available** — use `--local` flag to run installers in temp directories when Docker is unavailable (less isolation but no Docker dependency).
 
 ---
 

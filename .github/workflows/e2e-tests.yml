@@ -52,6 +52,12 @@ jobs:
       - name: Run Rust E2E tests
         run: cargo test --test e2e --all-features -- --test-threads=1
 
+      - name: Run Docker integration tests
+        run: cargo test --test e2e --all-features -- --ignored --test-threads=1
+        env:
+          DOCKER_TESTS: "1"
+        continue-on-error: true
+
   bash-e2e:
     name: Bash E2E Tests
     runs-on: ubuntu-latest
