@@ -7,7 +7,7 @@
 //! - Summary generation from test results
 
 use automated_flywheel_setup_checker::reporting::{
-    JsonlReporter, JsonlWriter, LogEntry, LogLevel, RunSummary, SummaryGenerator,
+    JsonlReporter, JsonlWriter, LogEntry, LogLevel, ResultPersister, RunSummary, SummaryGenerator,
 };
 use automated_flywheel_setup_checker::runner::{TestResult, TestStatus};
 use serde::{Deserialize, Serialize};
@@ -489,4 +489,135 @@ fn test_run_summary_serializable() {
     let json = serde_json::to_string(&summary).unwrap();
     assert!(json.contains("\"run_id\":\"test-run\""));
     assert!(json.contains("\"total_tests\":1"));
+}
+
+// ============================================================================
+// ResultPersister Tests (br-74o.10)
+// ============================================================================
+
+#[test]
+fn test_write_results_creates_file() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let persister = ResultPersister::new(tmp.path());
+
+    let results = vec![TestResult::new("test-installer").passed()];
+    let path = persister.persist(&results, "run-1", chrono::Utc::now()).unwrap();
+
+    assert!(path.exists());
+    assert!(path.to_string_lossy().contains("results_"));
+    assert!(path.to_string_lossy().ends_with(".jsonl"));
+}
+
+#[test]
+fn test_write_results_valid_jsonl() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let persister = ResultPersister::new(tmp.path());
+
+    let results = vec![
+        TestResult::new("installer1").passed(),
+        TestResult::new("installer2").failed(1, "error"),
+    ];
+    let path = persister.persist(&results, "run-2", chrono::Utc::now()).unwrap();
+
+    let content = fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+
+    // 2 result entries + 1 summary = 3 lines
+    assert_eq!(lines.len(), 3);
+
+    // Each line should be valid JSON
+    for line in &lines {
+        assert!(serde_json::from_str::<serde_json::Value>(line).is_ok(), "Invalid JSON: {}", line);
+    }
+
+    // Last line should contain run_id (summary)
+    assert!(lines[2].contains("run-2"));
+}
+
+#[test]
+fn test_write_results_atomic_no_tmp() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let persister = ResultPersister::new(tmp.path());
+
+    let results = vec![TestResult::new("test").passed()];
+    let path = persister.persist(&results, "run-3", chrono::Utc::now()).unwrap();
+
+    // After persist completes, no .tmp file should remain
+    let tmp_files: Vec<_> = fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "tmp").unwrap_or(false))
+        .collect();
+    assert!(tmp_files.is_empty(), "No .tmp files should remain after persist");
+
+    // The final file should exist
+    assert!(path.exists());
+}
+
+#[test]
+fn test_read_latest_results() {
+    let tmp = tempfile::TempDir::new().unwrap();
+
+    // Create two result files with different timestamps
+    fs::write(tmp.path().join("results_20260101_120000.jsonl"), "{}\n").unwrap();
+    fs::write(tmp.path().join("results_20260102_120000.jsonl"), "{}\n").unwrap();
+
+    let persister = ResultPersister::new(tmp.path());
+    let latest = persister.latest_results().unwrap();
+
+    assert!(latest.is_some());
+    let path = latest.unwrap();
+    assert!(path.to_string_lossy().contains("20260102"), "Should return the newer file");
+}
+
+#[test]
+fn test_read_results_empty_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let persister = ResultPersister::new(tmp.path());
+
+    let latest = persister.latest_results().unwrap();
+    assert!(latest.is_none());
+}
+
+#[test]
+fn test_read_results_nonexistent_dir() {
+    let persister = ResultPersister::new("/nonexistent/path/that/doesnt/exist");
+    let latest = persister.latest_results().unwrap();
+    assert!(latest.is_none());
+}
+
+#[test]
+fn test_result_entry_fields() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let persister = ResultPersister::new(tmp.path());
+
+    let results = vec![TestResult::new("myinstaller").passed()];
+    let path = persister.persist(&results, "run-fields", chrono::Utc::now()).unwrap();
+
+    let (entries, summary) = ResultPersister::read_results(&path).unwrap();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].installer_name, "myinstaller");
+    assert_eq!(entries[0].status, "passed");
+    assert_eq!(entries[0].retry_count, 0);
+
+    assert!(summary.is_some());
+    let s = summary.unwrap();
+    assert_eq!(s.run_id, "run-fields");
+    assert_eq!(s.total, 1);
+    assert_eq!(s.passed, 1);
+    assert_eq!(s.failed, 0);
+}
+
+#[test]
+fn test_results_dir_auto_created() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let nested = tmp.path().join("deeply").join("nested").join("dir");
+    let persister = ResultPersister::new(&nested);
+
+    let results = vec![TestResult::new("test").passed()];
+    let path = persister.persist(&results, "run-nested", chrono::Utc::now()).unwrap();
+
+    assert!(nested.exists());
+    assert!(path.exists());
 }

@@ -8,7 +8,8 @@
 //! - Error handling for malformed input
 
 use automated_flywheel_setup_checker::checksums::{
-    parse_checksums, validate_checksums, ChecksumsFile, InstallerEntry, ValidationResult,
+    parse_checksums, validate_checksums, ChecksumsFile, InstallerEntry, UrlCheckResult,
+    ValidationResult,
 };
 use std::collections::HashMap;
 use std::io::Write;
@@ -378,6 +379,111 @@ fn test_installer_entry_with_all_fields() {
     assert_eq!(entry.version.as_ref().unwrap(), "2.0.0");
     assert_eq!(entry.sha256.as_ref().unwrap(), "deadbeef1234");
     assert_eq!(entry.tags.len(), 2);
+}
+
+// ============================================================================
+// URL Check Result Tests (br-74o.11)
+// ============================================================================
+
+#[test]
+fn test_url_check_result_reachable() {
+    let result = UrlCheckResult {
+        name: "test-installer".to_string(),
+        url: "https://example.com/install.sh".to_string(),
+        status: Some(200),
+        response_time_ms: 150,
+        reachable: true,
+        error: None,
+    };
+    assert!(result.reachable);
+    assert_eq!(result.status, Some(200));
+    assert!(result.error.is_none());
+}
+
+#[test]
+fn test_url_check_result_broken() {
+    let result = UrlCheckResult {
+        name: "broken-installer".to_string(),
+        url: "https://example.com/missing.sh".to_string(),
+        status: Some(404),
+        response_time_ms: 50,
+        reachable: false,
+        error: Some("HTTP 404".to_string()),
+    };
+    assert!(!result.reachable);
+    assert_eq!(result.status, Some(404));
+    assert!(result.error.is_some());
+}
+
+#[test]
+fn test_url_check_result_network_error() {
+    let result = UrlCheckResult {
+        name: "unreachable".to_string(),
+        url: "https://nonexistent.invalid/install.sh".to_string(),
+        status: None,
+        response_time_ms: 5000,
+        reachable: false,
+        error: Some("DNS resolution failed".to_string()),
+    };
+    assert!(!result.reachable);
+    assert!(result.status.is_none());
+}
+
+#[test]
+fn test_url_check_result_redirect() {
+    let result = UrlCheckResult {
+        name: "redirect".to_string(),
+        url: "https://example.com/old-path".to_string(),
+        status: Some(301),
+        response_time_ms: 80,
+        reachable: false,
+        error: Some("Redirect (301)".to_string()),
+    };
+    assert!(!result.reachable);
+    assert_eq!(result.status, Some(301));
+}
+
+#[test]
+fn test_url_check_result_serializable() {
+    let result = UrlCheckResult {
+        name: "test".to_string(),
+        url: "https://example.com".to_string(),
+        status: Some(200),
+        response_time_ms: 100,
+        reachable: true,
+        error: None,
+    };
+    let json = serde_json::to_string(&result).unwrap();
+    assert!(json.contains("\"reachable\":true"));
+    assert!(json.contains("\"response_time_ms\":100"));
+}
+
+#[tokio::test]
+async fn test_check_urls_empty_checksums() {
+    use automated_flywheel_setup_checker::checksums::check_urls;
+    let checksums = ChecksumsFile { installers: HashMap::new() };
+    let results = check_urls(&checksums).await;
+    assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn test_check_urls_disabled_skipped() {
+    use automated_flywheel_setup_checker::checksums::check_urls;
+    let mut installers = HashMap::new();
+    installers.insert(
+        "disabled-tool".to_string(),
+        InstallerEntry {
+            url: Some("https://example.com/install.sh".to_string()),
+            sha256: None,
+            version: None,
+            enabled: false,
+            tags: vec![],
+            extra: HashMap::new(),
+        },
+    );
+    let checksums = ChecksumsFile { installers };
+    let results = check_urls(&checksums).await;
+    assert!(results.is_empty(), "Disabled installers should be skipped");
 }
 
 // ============================================================================

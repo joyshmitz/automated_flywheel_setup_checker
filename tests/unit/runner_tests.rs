@@ -462,6 +462,42 @@ fn test_execution_backend_local() {
 }
 
 // ============================================================================
+// ParallelRunner Tests (br-74o.12)
+// ============================================================================
+
+#[test]
+fn test_parallel_runner_max_parallel() {
+    let config = RunnerConfig {
+        backend: ExecutionBackend::Local,
+        ..Default::default()
+    };
+    let runner = ParallelRunner::new(8, config);
+    assert_eq!(runner.max_parallel(), 8);
+}
+
+#[tokio::test]
+async fn test_parallel_runner_empty_tests() {
+    let config = RunnerConfig {
+        backend: ExecutionBackend::Local,
+        ..Default::default()
+    };
+    let runner = ParallelRunner::new(4, config);
+    let results = runner.run_all(vec![]).await.unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_parallel_runner_fail_fast_config() {
+    let config = RunnerConfig {
+        backend: ExecutionBackend::Local,
+        ..Default::default()
+    };
+    let runner = ParallelRunner::new(4, config).with_fail_fast(true);
+    // Just verify it can be constructed
+    assert_eq!(runner.max_parallel(), 4);
+}
+
+// ============================================================================
 // Edge Cases
 // ============================================================================
 
