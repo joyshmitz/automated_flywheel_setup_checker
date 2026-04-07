@@ -84,7 +84,6 @@ impl ContainerManager {
         Self { config, docker: Arc::new(docker), pull_policy: PullPolicy::IfNotPresent }
     }
 
-    /// Pull the Docker image if required by the pull policy
     /// The tag used for the pre-built ACFS base image.
     pub const AFSC_BASE_IMAGE: &'static str = "afsc-base:latest";
 
