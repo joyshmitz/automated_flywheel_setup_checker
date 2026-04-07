@@ -1,151 +1,204 @@
-//! Tests for the notification module
-//!
-//! Tests cover:
-//! - NotificationConfig creation
-//! - GitHubConfig and SlackConfig
-//! - Notifier creation and configuration access
+//! Tests for notification wiring and config conversion.
 
-use automated_flywheel_setup_checker::reporting::{NotificationConfig, Notifier};
+use automated_flywheel_setup_checker::config::{Config, NotificationsConfig};
+use automated_flywheel_setup_checker::reporting::{
+    GitHubConfig, NotificationConfig, Notifier, SlackConfig,
+};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-// ============================================================================
-// NotificationConfig Tests
-// ============================================================================
+fn env_lock() -> &'static Mutex<()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
 
-#[test]
-fn test_notification_config_no_providers() {
-    let config = NotificationConfig { github: None, slack: None };
-    assert!(config.github.is_none());
-    assert!(config.slack.is_none());
+fn configured_notifications() -> NotificationsConfig {
+    NotificationsConfig {
+        enabled: true,
+        slack_webhook_env: "SLACK_WEBHOOK_URL".to_string(),
+        slack_channel: "#ops-alerts".to_string(),
+        github_token_env: "GITHUB_TOKEN".to_string(),
+        github_issue_repo: "owner/repo".to_string(),
+        notify_on_failure: true,
+        notify_on_success: true,
+    }
 }
 
 #[test]
-fn test_notification_config_github_only() {
-    let config = NotificationConfig {
-        github: Some(automated_flywheel_setup_checker::reporting::GitHubConfig {
-            repo: "owner/repo".to_string(),
-            token_env: "GITHUB_TOKEN".to_string(),
-            create_issues: true,
-            add_comments: false,
-        }),
-        slack: None,
-    };
-    assert!(config.github.is_some());
-    assert!(config.slack.is_none());
-    assert_eq!(config.github.as_ref().unwrap().repo, "owner/repo");
+fn test_notifications_config_defaults() {
+    let config = NotificationsConfig::default();
+
+    assert!(!config.enabled);
+    assert!(config.slack_webhook_env.is_empty());
+    assert!(config.slack_channel.is_empty());
+    assert!(config.github_token_env.is_empty());
+    assert!(config.github_issue_repo.is_empty());
+    assert!(config.notify_on_failure);
+    assert!(!config.notify_on_success);
 }
 
 #[test]
-fn test_notification_config_slack_only() {
-    let config = NotificationConfig {
-        github: None,
-        slack: Some(automated_flywheel_setup_checker::reporting::SlackConfig {
-            webhook_url_env: "SLACK_WEBHOOK".to_string(),
-            channel: "#alerts".to_string(),
-            notify_on_failure: true,
-            notify_on_success: false,
-        }),
-    };
-    assert!(config.github.is_none());
-    assert!(config.slack.is_some());
-    assert_eq!(config.slack.as_ref().unwrap().channel, "#alerts");
+fn test_notifications_config_from_toml() {
+    let config: Config = toml::from_str(
+        r#"
+[notifications]
+enabled = true
+slack_webhook_env = "SLACK_WEBHOOK_URL"
+slack_channel = "#ops-alerts"
+github_token_env = "GITHUB_TOKEN"
+github_issue_repo = "owner/repo"
+notify_on_failure = true
+notify_on_success = true
+"#,
+    )
+    .unwrap();
+
+    assert!(config.notifications.enabled);
+    assert_eq!(config.notifications.slack_webhook_env, "SLACK_WEBHOOK_URL");
+    assert_eq!(config.notifications.slack_channel, "#ops-alerts");
+    assert_eq!(config.notifications.github_token_env, "GITHUB_TOKEN");
+    assert_eq!(config.notifications.github_issue_repo, "owner/repo");
+    assert!(config.notifications.notify_on_failure);
+    assert!(config.notifications.notify_on_success);
 }
 
 #[test]
-fn test_notification_config_both_providers() {
-    let config = NotificationConfig {
-        github: Some(automated_flywheel_setup_checker::reporting::GitHubConfig {
-            repo: "owner/repo".to_string(),
-            token_env: "GITHUB_TOKEN".to_string(),
-            create_issues: true,
-            add_comments: true,
-        }),
-        slack: Some(automated_flywheel_setup_checker::reporting::SlackConfig {
-            webhook_url_env: "SLACK_WEBHOOK".to_string(),
-            channel: "#ci".to_string(),
-            notify_on_failure: true,
-            notify_on_success: true,
-        }),
-    };
-    assert!(config.github.is_some());
-    assert!(config.slack.is_some());
-}
+fn test_notifications_config_to_internal() {
+    let internal = configured_notifications().to_internal();
 
-// ============================================================================
-// Notifier Tests
-// ============================================================================
+    assert!(internal.enabled);
 
-#[test]
-fn test_notifier_creation() {
-    let config = NotificationConfig { github: None, slack: None };
-    let notifier = Notifier::new(config);
-    assert!(notifier.config().github.is_none());
-}
+    let github = internal.github.expect("expected github provider");
+    assert_eq!(github.repo, "owner/repo");
+    assert_eq!(github.token_env, "GITHUB_TOKEN");
+    assert!(github.create_issues);
+    assert!(!github.add_comments);
 
-#[test]
-fn test_notifier_config_accessor() {
-    let config = NotificationConfig {
-        github: Some(automated_flywheel_setup_checker::reporting::GitHubConfig {
-            repo: "test/repo".to_string(),
-            token_env: "TOKEN".to_string(),
-            create_issues: false,
-            add_comments: false,
-        }),
-        slack: None,
-    };
-    let notifier = Notifier::new(config);
-    assert_eq!(notifier.config().github.as_ref().unwrap().repo, "test/repo");
+    let slack = internal.slack.expect("expected slack provider");
+    assert_eq!(slack.webhook_url_env, "SLACK_WEBHOOK_URL");
+    assert_eq!(slack.channel, "#ops-alerts");
+    assert!(slack.notify_on_failure);
+    assert!(slack.notify_on_success);
 }
 
 #[tokio::test]
-async fn test_notifier_notify_no_providers() {
-    let config = NotificationConfig { github: None, slack: None };
-    let notifier = Notifier::new(config);
-    // Should succeed even with no providers
-    let result = notifier.notify("Test", "Test message", false).await;
-    assert!(result.is_ok());
-}
-
-// ============================================================================
-// Serialization Tests
-// ============================================================================
-
-#[test]
-fn test_notification_config_serializable() {
-    let config = NotificationConfig {
-        github: Some(automated_flywheel_setup_checker::reporting::GitHubConfig {
+async fn test_notifier_skips_when_disabled() {
+    let notifier = Notifier::new(NotificationConfig {
+        enabled: false,
+        github: Some(GitHubConfig {
             repo: "owner/repo".to_string(),
             token_env: "GITHUB_TOKEN".to_string(),
             create_issues: true,
             add_comments: false,
         }),
+        slack: Some(SlackConfig {
+            webhook_url_env: "SLACK_WEBHOOK_URL".to_string(),
+            channel: "#ops-alerts".to_string(),
+            notify_on_failure: true,
+            notify_on_success: true,
+        }),
+    });
+
+    let started = Instant::now();
+    let result = notifier.notify("Test", "Body", true).await;
+
+    assert!(result.is_ok());
+    assert!(started.elapsed() < Duration::from_millis(1));
+}
+
+#[tokio::test]
+async fn test_github_skips_missing_token() {
+    let _guard = env_lock().lock().unwrap();
+    let missing_env = format!("MISSING_GITHUB_TOKEN_{}", uuid::Uuid::new_v4().simple());
+    std::env::remove_var(&missing_env);
+
+    let notifier = Notifier::new(NotificationConfig {
+        enabled: true,
+        github: Some(GitHubConfig {
+            repo: "owner/repo".to_string(),
+            token_env: missing_env,
+            create_issues: true,
+            add_comments: false,
+        }),
         slack: None,
-    };
+    });
 
-    let json = serde_json::to_string(&config).unwrap();
-    assert!(json.contains("owner/repo"));
-    assert!(json.contains("GITHUB_TOKEN"));
+    let result = notifier.notify("Failure", "Body", true).await;
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_slack_skips_missing_webhook() {
+    let _guard = env_lock().lock().unwrap();
+    let missing_env = format!("MISSING_SLACK_WEBHOOK_{}", uuid::Uuid::new_v4().simple());
+    std::env::remove_var(&missing_env);
+
+    let notifier = Notifier::new(NotificationConfig {
+        enabled: true,
+        github: None,
+        slack: Some(SlackConfig {
+            webhook_url_env: missing_env,
+            channel: "#ops-alerts".to_string(),
+            notify_on_failure: true,
+            notify_on_success: false,
+        }),
+    });
+
+    let result = notifier.notify("Failure", "Body", true).await;
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_github_skips_empty_repo() {
+    let notifications = NotificationsConfig {
+        github_issue_repo: String::new(),
+        github_token_env: "GITHUB_TOKEN".to_string(),
+        ..configured_notifications()
+    };
+    let notifier = Notifier::new(notifications.to_internal());
+
+    let result = notifier.notify("Failure", "Body", true).await;
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_slack_skips_empty_env() {
+    let notifications = NotificationsConfig {
+        slack_webhook_env: String::new(),
+        slack_channel: "#ops-alerts".to_string(),
+        ..configured_notifications()
+    };
+    let notifier = Notifier::new(notifications.to_internal());
+
+    let result = notifier.notify("Failure", "Body", true).await;
+
+    assert!(result.is_ok());
 }
 
 #[test]
-fn test_github_config_clone() {
-    let config = automated_flywheel_setup_checker::reporting::GitHubConfig {
-        repo: "test/repo".to_string(),
-        token_env: "TOKEN".to_string(),
-        create_issues: true,
-        add_comments: false,
-    };
-    let cloned = config.clone();
-    assert_eq!(config.repo, cloned.repo);
-}
-
-#[test]
-fn test_slack_config_clone() {
-    let config = automated_flywheel_setup_checker::reporting::SlackConfig {
-        webhook_url_env: "WEBHOOK".to_string(),
-        channel: "#channel".to_string(),
+fn test_notify_on_failure_only() {
+    let notifications = NotificationsConfig {
         notify_on_failure: true,
         notify_on_success: false,
+        ..configured_notifications()
     };
-    let cloned = config.clone();
-    assert_eq!(config.channel, cloned.channel);
+
+    let slack = notifications
+        .to_internal()
+        .slack
+        .expect("expected slack provider for failure-only config");
+
+    assert!(slack.notify_on_failure);
+    assert!(!slack.notify_on_success);
+}
+
+#[test]
+fn test_notify_routes_both() {
+    let internal = configured_notifications().to_internal();
+
+    assert!(internal.github.is_some());
+    assert!(internal.slack.is_some());
 }

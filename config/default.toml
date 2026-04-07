@@ -39,12 +39,16 @@ max_attempts = 3
 [notifications]
 # Enable failure notifications
 enabled = false
-# Slack webhook URL for notifications (leave empty to disable Slack)
-slack_webhook = ""
+# Env var holding the Slack webhook URL (leave empty to disable Slack)
+slack_webhook_env = ""
+# Optional Slack channel override
+slack_channel = ""
+# Env var holding the GitHub token (leave empty to disable GitHub issue creation)
+github_token_env = ""
 # GitHub repo for auto-creating issues on failure (e.g., "owner/repo")
 github_issue_repo = ""
-# Email address for failure notifications (leave empty to disable email)
-email = ""
+notify_on_failure = true
+notify_on_success = false
 
 [monitoring]
 # Enable health check endpoint

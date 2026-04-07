@@ -309,7 +309,7 @@ main() {
     # Cleanup any leftover containers from previous runs
     cleanup_orphan_containers
 
-    # Core test cases (12 tests)
+    # Core test cases (13 tests)
     local core_tests=(
         "single_installer"
         "batch_run"
@@ -321,6 +321,7 @@ main() {
         "parallel_execution"
         "systemd_integration"
         "github_notification"
+        "metrics_persistence"
         "config_override"
         "recovery_rollback"
     )
@@ -334,7 +335,7 @@ main() {
     )
 
     # Run core tests
-    log_info "Running core tests (12 tests)..."
+    log_info "Running core tests (13 tests)..."
     for test in "${core_tests[@]}"; do
         run_test "$test"
     done

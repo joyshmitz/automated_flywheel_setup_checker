@@ -21,11 +21,7 @@ fn test_pipeline_network_errors_are_transient() {
             stderr,
             result.severity
         );
-        assert!(
-            result.retryable,
-            "Network error '{}' should be retryable",
-            stderr
-        );
+        assert!(result.retryable, "Network error '{}' should be retryable", stderr);
     }
 }
 
@@ -47,11 +43,7 @@ fn test_pipeline_permission_errors_are_not_retryable() {
             stderr,
             result.severity
         );
-        assert!(
-            !result.retryable,
-            "Permission error '{}' should NOT be retryable",
-            stderr
-        );
+        assert!(!result.retryable, "Permission error '{}' should NOT be retryable", stderr);
     }
 }
 
@@ -112,11 +104,7 @@ fn test_pipeline_exit_code_127_is_definitive() {
 fn test_pipeline_exit_code_126_is_permission() {
     // Exit code 126 means "permission denied" or "not executable"
     let result = classify_error("", 126);
-    assert_eq!(
-        result.severity,
-        ErrorSeverity::Permission,
-        "Exit code 126 should be Permission"
-    );
+    assert_eq!(result.severity, ErrorSeverity::Permission, "Exit code 126 should be Permission");
 }
 
 #[test]
@@ -173,12 +161,8 @@ Please check your network connection."#;
 #[test]
 fn test_pipeline_case_insensitive_matching() {
     // Test various case variations
-    let variations = vec![
-        "PERMISSION DENIED",
-        "permission denied",
-        "Permission Denied",
-        "PerMiSSion DeNied",
-    ];
+    let variations =
+        vec!["PERMISSION DENIED", "permission denied", "Permission Denied", "PerMiSSion DeNied"];
 
     for stderr in variations {
         let result = classify_error(stderr, 1);
@@ -195,17 +179,11 @@ fn test_pipeline_case_insensitive_matching() {
 fn test_pipeline_suggestions_provided() {
     // Network error should suggest retry
     let network_result = classify_error("Connection refused", 1);
-    assert!(
-        network_result.suggestion.is_some(),
-        "Network errors should have suggestions"
-    );
+    assert!(network_result.suggestion.is_some(), "Network errors should have suggestions");
 
     // Permission error should suggest checking permissions
     let perm_result = classify_error("Permission denied", 1);
-    assert!(
-        perm_result.suggestion.is_some(),
-        "Permission errors should have suggestions"
-    );
+    assert!(perm_result.suggestion.is_some(), "Permission errors should have suggestions");
 
     // Unknown errors may not have suggestions
     let unknown_result = classify_error("???", 99);

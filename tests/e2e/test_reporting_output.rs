@@ -30,7 +30,8 @@ fn test_jsonl_writer_writes_entries() {
 
     {
         let mut writer = JsonlWriter::new(&path).expect("Should create writer");
-        let entry = LogEntry::info("test", "test_event").with_data(serde_json::json!({"key": "value"}));
+        let entry =
+            LogEntry::info("test", "test_event").with_data(serde_json::json!({"key": "value"}));
         writer.write(&entry).expect("Should write entry");
     }
 
@@ -68,14 +69,8 @@ fn test_log_rotation_config() {
     assert_eq!(rotation.retention_days(), 7);
 
     let current_path = rotation.current_log_path();
-    assert!(
-        current_path.to_string_lossy().contains("checker_"),
-        "Path should contain prefix"
-    );
-    assert!(
-        current_path.to_string_lossy().ends_with(".jsonl"),
-        "Path should end with .jsonl"
-    );
+    assert!(current_path.to_string_lossy().contains("checker_"), "Path should contain prefix");
+    assert!(current_path.to_string_lossy().ends_with(".jsonl"), "Path should end with .jsonl");
 }
 
 #[test]
@@ -84,7 +79,8 @@ fn test_jsonl_reporter_filtering() {
     let path = dir.path().join("filtered.jsonl");
 
     {
-        let mut reporter = JsonlReporter::new(&path, LogLevel::Warn).expect("Should create reporter");
+        let mut reporter =
+            JsonlReporter::new(&path, LogLevel::Warn).expect("Should create reporter");
 
         // Debug should be filtered out
         reporter.log(LogEntry::debug("test", "debug_event")).expect("Should log");
@@ -195,10 +191,7 @@ fn test_log_rotation_list_files() {
     assert_eq!(files.len(), 3, "Should find 3 log files");
 
     // Should be sorted newest first
-    assert!(
-        files[0].to_string_lossy().contains("20260127"),
-        "First should be newest"
-    );
+    assert!(files[0].to_string_lossy().contains("20260127"), "First should be newest");
 }
 
 #[test]
@@ -207,9 +200,7 @@ fn test_log_rotation_prune_old_files() {
     let rotation = LogRotation::new(dir.path(), 7, "checker");
 
     // Create an old log file (simulate 10 days ago)
-    let old_date = (chrono::Utc::now() - chrono::Duration::days(10))
-        .format("%Y%m%d")
-        .to_string();
+    let old_date = (chrono::Utc::now() - chrono::Duration::days(10)).format("%Y%m%d").to_string();
     let old_file = dir.path().join(format!("checker_{}.jsonl", old_date));
     fs::write(&old_file, "{}").expect("Should write old file");
 

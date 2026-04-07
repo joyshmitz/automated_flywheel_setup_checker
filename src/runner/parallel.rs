@@ -62,8 +62,7 @@ impl ParallelRunner {
                     Ok(r) => r,
                     Err(e) => {
                         warn!(installer = %test.name, error = %e, "Test execution failed");
-                        TestResult::new(&test.name)
-                            .failed(-1, format!("Execution error: {}", e))
+                        TestResult::new(&test.name).failed(-1, format!("Execution error: {}", e))
                     }
                 };
 
@@ -109,20 +108,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_parallel_runner_creation() {
-        let config = RunnerConfig {
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config = RunnerConfig { backend: ExecutionBackend::Local, ..Default::default() };
         let runner = ParallelRunner::new(4, config);
         assert_eq!(runner.max_parallel(), 4);
     }
 
     #[tokio::test]
     async fn test_parallel_runner_empty() {
-        let config = RunnerConfig {
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config = RunnerConfig { backend: ExecutionBackend::Local, ..Default::default() };
         let runner = ParallelRunner::new(4, config);
         let results = runner.run_all(vec![]).await.unwrap();
         assert!(results.is_empty());

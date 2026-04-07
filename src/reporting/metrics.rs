@@ -4,7 +4,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Metrics data structure
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -59,6 +59,16 @@ impl MetricsSnapshot {
         Ok(snapshot)
     }
 
+    /// Load a snapshot or fall back to the default empty state.
+    pub fn load_or_default(path: &Path) -> Self {
+        Self::load(path).unwrap_or_default()
+    }
+
+    /// Default metrics snapshot path (~/.local/share/afsc/metrics.json).
+    pub fn default_path() -> PathBuf {
+        default_data_dir().join("metrics.json")
+    }
+
     /// Update snapshot with a new test result
     pub fn record_test(&mut self, success: bool) {
         self.last_test = Some(Utc::now());
@@ -73,8 +83,7 @@ impl MetricsSnapshot {
 
         // Recalculate success rate
         if self.total_tests_24h > 0 {
-            self.success_rate_24h =
-                self.successful_tests_24h as f64 / self.total_tests_24h as f64;
+            self.success_rate_24h = self.successful_tests_24h as f64 / self.total_tests_24h as f64;
         }
 
         self.snapshot_time = Utc::now();
@@ -84,6 +93,18 @@ impl MetricsSnapshot {
     pub fn record_remediation(&mut self) {
         self.total_remediations_24h += 1;
         self.snapshot_time = Utc::now();
+    }
+
+    /// Reset rolling counters when the snapshot is older than 24 hours.
+    pub fn reset_if_stale(&mut self) {
+        let age = Utc::now() - self.snapshot_time;
+
+        if age > chrono::Duration::hours(24) {
+            self.total_tests_24h = 0;
+            self.successful_tests_24h = 0;
+            self.success_rate_24h = 0.0;
+            self.total_remediations_24h = 0;
+        }
     }
 
     /// Update uptime
@@ -102,6 +123,26 @@ pub struct MetricsExporter {
 impl MetricsExporter {
     pub fn new(prefix: impl Into<String>) -> Self {
         Self { metrics: Metrics::default(), prefix: prefix.into() }
+    }
+
+    /// Build an exporter from a persisted metrics snapshot.
+    pub fn from_snapshot(prefix: impl Into<String>, snapshot: &MetricsSnapshot) -> Self {
+        let mut exporter = Self::new(prefix);
+        exporter.set_gauge("tests_total_24h", snapshot.total_tests_24h as f64);
+        exporter.set_gauge("successful_tests_24h", snapshot.successful_tests_24h as f64);
+        exporter.set_gauge("success_rate_24h", snapshot.success_rate_24h);
+        exporter.set_gauge("remediations_total_24h", snapshot.total_remediations_24h as f64);
+        exporter.set_gauge("uptime_seconds", snapshot.uptime_seconds as f64);
+        if let Some(last_test) = snapshot.last_test {
+            exporter.set_gauge("last_test_timestamp", last_test.timestamp() as f64);
+        }
+        if let Some(last_success) = snapshot.last_success {
+            exporter.set_gauge("last_success_timestamp", last_success.timestamp() as f64);
+        }
+        if let Some(last_failure) = snapshot.last_failure {
+            exporter.set_gauge("last_failure_timestamp", last_failure.timestamp() as f64);
+        }
+        exporter
     }
 
     /// Increment a counter
@@ -127,10 +168,14 @@ impl MetricsExporter {
         let mut output = String::new();
 
         for (name, value) in &self.metrics.counters {
+            output.push_str(&format!("# HELP {name} {}\n", metric_help(name)));
+            output.push_str(&format!("# TYPE {name} counter\n"));
             output.push_str(&format!("{} {}\n", name, value));
         }
 
         for (name, value) in &self.metrics.gauges {
+            output.push_str(&format!("# HELP {name} {}\n", metric_help(name)));
+            output.push_str(&format!("# TYPE {name} gauge\n"));
             output.push_str(&format!("{} {}\n", name, value));
         }
 
@@ -139,6 +184,33 @@ impl MetricsExporter {
 
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+}
+
+fn default_data_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".local").join("share").join("afsc")
+}
+
+fn metric_help(name: &str) -> &'static str {
+    if name.ends_with("tests_total_24h") {
+        "Total tests in last 24 hours"
+    } else if name.ends_with("successful_tests_24h") {
+        "Successful tests in last 24 hours"
+    } else if name.ends_with("success_rate_24h") {
+        "Success rate in last 24 hours"
+    } else if name.ends_with("remediations_total_24h") {
+        "Remediation attempts in last 24 hours"
+    } else if name.ends_with("uptime_seconds") {
+        "Most recent command runtime in seconds"
+    } else if name.ends_with("last_test_timestamp") {
+        "Unix timestamp of the most recent test"
+    } else if name.ends_with("last_success_timestamp") {
+        "Unix timestamp of the most recent successful test"
+    } else if name.ends_with("last_failure_timestamp") {
+        "Unix timestamp of the most recent failed test"
+    } else {
+        "AFSC metric"
     }
 }
 
@@ -198,5 +270,74 @@ mod tests {
         snapshot.record_test(false);
         // Now 2 successes out of 3 = 0.666...
         assert!((snapshot.success_rate_24h - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_reset_if_stale() {
+        let mut snapshot = MetricsSnapshot {
+            total_tests_24h: 10,
+            successful_tests_24h: 8,
+            success_rate_24h: 0.8,
+            total_remediations_24h: 2,
+            snapshot_time: Utc::now() - chrono::Duration::hours(25),
+            ..Default::default()
+        };
+
+        snapshot.reset_if_stale();
+
+        assert_eq!(snapshot.total_tests_24h, 0);
+        assert_eq!(snapshot.successful_tests_24h, 0);
+        assert_eq!(snapshot.success_rate_24h, 0.0);
+        assert_eq!(snapshot.total_remediations_24h, 0);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_no_reset_if_fresh() {
+        let mut snapshot = MetricsSnapshot {
+            total_tests_24h: 10,
+            successful_tests_24h: 8,
+            success_rate_24h: 0.8,
+            total_remediations_24h: 2,
+            snapshot_time: Utc::now() - chrono::Duration::hours(23),
+            ..Default::default()
+        };
+
+        snapshot.reset_if_stale();
+
+        assert_eq!(snapshot.total_tests_24h, 10);
+        assert_eq!(snapshot.successful_tests_24h, 8);
+        assert_eq!(snapshot.success_rate_24h, 0.8);
+        assert_eq!(snapshot.total_remediations_24h, 2);
+    }
+
+    #[test]
+    fn test_metrics_file_path_convention() {
+        let expected = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
+            .join(".local")
+            .join("share")
+            .join("afsc")
+            .join("metrics.json");
+
+        assert_eq!(MetricsSnapshot::default_path(), expected);
+    }
+
+    #[test]
+    fn test_metrics_exporter_from_snapshot_prometheus_text() {
+        let snapshot = MetricsSnapshot {
+            total_tests_24h: 42,
+            successful_tests_24h: 40,
+            success_rate_24h: 0.952,
+            total_remediations_24h: 3,
+            ..Default::default()
+        };
+
+        let exporter = MetricsExporter::from_snapshot("afsc", &snapshot);
+        let output = exporter.export();
+
+        assert!(output.contains("# HELP afsc_tests_total_24h Total tests in last 24 hours"));
+        assert!(output.contains("# TYPE afsc_tests_total_24h gauge"));
+        assert!(output.contains("afsc_tests_total_24h 42"));
+        assert!(output.contains("# HELP afsc_success_rate_24h Success rate in last 24 hours"));
+        assert!(output.contains("afsc_success_rate_24h 0.952"));
     }
 }

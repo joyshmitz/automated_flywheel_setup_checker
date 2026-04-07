@@ -48,10 +48,22 @@ fn test_config_default_command() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Config default should output TOML
-    assert!(
-        stdout.contains("[") || stdout.contains("="),
-        "Should output config format"
-    );
+    assert!(stdout.contains("[") || stdout.contains("="), "Should output config format");
+}
+
+#[test]
+fn test_serve_command_help() {
+    if !binary_exists() {
+        eprintln!("SKIP: Binary not built");
+        return;
+    }
+
+    let output = run_checker(&["serve", "--help"]);
+    assert!(output.status.success(), "serve --help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("health-port"), "serve help should document --health-port");
+    assert!(stdout.contains("metrics-port"), "serve help should document --metrics-port");
 }
 
 #[test]

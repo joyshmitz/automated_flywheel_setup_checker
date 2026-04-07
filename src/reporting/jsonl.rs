@@ -232,11 +232,7 @@ impl LogRotation {
         retention_days: u32,
         file_prefix: impl Into<String>,
     ) -> Self {
-        Self {
-            log_dir: log_dir.into(),
-            retention_days,
-            file_prefix: file_prefix.into(),
-        }
+        Self { log_dir: log_dir.into(), retention_days, file_prefix: file_prefix.into() }
     }
 
     /// Get the path for today's log file
@@ -433,8 +429,14 @@ impl ResultPersister {
 
         // Write summary line
         let passed = results.iter().filter(|r| r.success).count();
-        let failed = results.iter().filter(|r| !r.success && !matches!(r.status, crate::runner::TestStatus::Skipped)).count();
-        let skipped = results.iter().filter(|r| matches!(r.status, crate::runner::TestStatus::Skipped)).count();
+        let failed = results
+            .iter()
+            .filter(|r| !r.success && !matches!(r.status, crate::runner::TestStatus::Skipped))
+            .count();
+        let skipped = results
+            .iter()
+            .filter(|r| matches!(r.status, crate::runner::TestStatus::Skipped))
+            .count();
         let total_ms: u64 = results.iter().map(|r| r.duration_ms).sum();
 
         let summary = RunSummaryEntry {
@@ -523,11 +525,7 @@ impl ResultPersister {
 /// Default results directory
 fn dirs_default_results_dir() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("afsc")
-        .join("results")
+    std::path::PathBuf::from(home).join(".local").join("share").join("afsc").join("results")
 }
 
 #[cfg(test)]
@@ -616,9 +614,8 @@ mod tests {
         let rotation = LogRotation::new(tmp.path(), 7, "checker");
 
         // Create an old log file (simulate 10 days ago)
-        let old_date = (chrono::Utc::now() - chrono::Duration::days(10))
-            .format("%Y%m%d")
-            .to_string();
+        let old_date =
+            (chrono::Utc::now() - chrono::Duration::days(10)).format("%Y%m%d").to_string();
         let old_file = tmp.path().join(format!("checker_{}.jsonl", old_date));
         std::fs::write(&old_file, "{}").unwrap();
 

@@ -3,6 +3,7 @@
 //! Provides integration with systemd's watchdog mechanism for service health monitoring.
 //! The service must periodically ping the watchdog to indicate it's still running.
 
+use crate::config::WatchdogConfig;
 use std::env;
 use std::io;
 use std::os::unix::net::UnixDatagram;
@@ -16,6 +17,7 @@ use tracing::{debug, info, warn};
 pub struct SystemdWatchdog {
     enabled: bool,
     interval: Duration,
+    log_pings: bool,
     socket_path: Option<String>,
     shutdown: Arc<AtomicBool>,
 }
@@ -24,9 +26,7 @@ impl SystemdWatchdog {
     /// Create a new watchdog handler, auto-detecting systemd environment
     pub fn new() -> Self {
         // Check if we're running under systemd with watchdog
-        let watchdog_usec = env::var("WATCHDOG_USEC")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok());
+        let watchdog_usec = env::var("WATCHDOG_USEC").ok().and_then(|s| s.parse::<u64>().ok());
 
         let notify_socket = env::var("NOTIFY_SOCKET").ok();
 
@@ -37,10 +37,7 @@ impl SystemdWatchdog {
             .unwrap_or(Duration::from_secs(120));
 
         if enabled {
-            info!(
-                "Systemd watchdog enabled, will ping every {:?}",
-                interval
-            );
+            info!("Systemd watchdog enabled, will ping every {:?}", interval);
         } else {
             debug!("Systemd watchdog not configured (WATCHDOG_USEC or NOTIFY_SOCKET not set)");
         }
@@ -48,9 +45,19 @@ impl SystemdWatchdog {
         Self {
             enabled,
             interval,
+            log_pings: false,
             socket_path: notify_socket,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Apply config-driven defaults without overriding systemd-provided settings.
+    pub fn with_config(mut self, config: &WatchdogConfig) -> Self {
+        if !self.enabled {
+            self.interval = Duration::from_secs(config.default_interval_seconds);
+        }
+        self.log_pings = config.log_pings;
+        self
     }
 
     /// Check if watchdog is enabled
@@ -92,6 +99,8 @@ impl SystemdWatchdog {
         if let Some(ref socket_path) = self.socket_path {
             if let Err(e) = send_notify(socket_path, "WATCHDOG=1") {
                 warn!("Failed to ping watchdog: {}", e);
+            } else if self.log_pings {
+                info!("Watchdog ping sent");
             } else {
                 debug!("Watchdog ping sent");
             }
@@ -217,5 +226,35 @@ mod tests {
         let watchdog = SystemdWatchdog::new();
         // Default interval when not configured
         assert_eq!(watchdog.interval, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_watchdog_with_config_override() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        env::remove_var("WATCHDOG_USEC");
+        env::remove_var("NOTIFY_SOCKET");
+
+        let config = WatchdogConfig { default_interval_seconds: 60, log_pings: true };
+        let watchdog = SystemdWatchdog::new().with_config(&config);
+
+        assert_eq!(watchdog.interval, Duration::from_secs(60));
+        assert!(watchdog.log_pings);
+    }
+
+    #[test]
+    fn test_watchdog_env_takes_priority() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        env::set_var("WATCHDOG_USEC", "120000000");
+        env::set_var("NOTIFY_SOCKET", "/run/test.sock");
+
+        let config = WatchdogConfig { default_interval_seconds: 15, log_pings: false };
+        let watchdog = SystemdWatchdog::new().with_config(&config);
+
+        assert_eq!(watchdog.interval, Duration::from_secs(60));
+
+        env::remove_var("WATCHDOG_USEC");
+        env::remove_var("NOTIFY_SOCKET");
     }
 }

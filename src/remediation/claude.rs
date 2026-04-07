@@ -570,15 +570,10 @@ impl ClaudeRemediation {
                 for suggestion in suggestions {
                     if let Some(files) = suggestion.get("files").and_then(|f| f.as_array()) {
                         for file in files {
-                            let path = file
-                                .get("path")
-                                .and_then(|p| p.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let diff = file
-                                .get("content")
-                                .and_then(|c| c.as_str())
-                                .map(|s| s.to_string());
+                            let path =
+                                file.get("path").and_then(|p| p.as_str()).unwrap_or("").to_string();
+                            let diff =
+                                file.get("content").and_then(|c| c.as_str()).map(|s| s.to_string());
                             if !path.is_empty() {
                                 changes.push(FileChange {
                                     path: PathBuf::from(path),
@@ -635,9 +630,7 @@ impl ClaudeRemediation {
         // Download and run the installer in test mode
         let curl_output = timeout(
             Duration::from_secs(60),
-            Command::new("curl")
-                .args(["-fsSL", installer_url])
-                .output(),
+            Command::new("curl").args(["-fsSL", installer_url]).output(),
         )
         .await
         .map_err(|_| RemediationError::Timeout)?

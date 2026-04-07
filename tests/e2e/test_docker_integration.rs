@@ -41,10 +41,8 @@ async fn test_exec_simple_command() {
 
     let container_id = manager.create_container("exec-test").await.unwrap();
 
-    let (exit_code, stdout, _stderr) = manager
-        .exec_in_container(&container_id, &["echo", "hello world"])
-        .await
-        .unwrap();
+    let (exit_code, stdout, _stderr) =
+        manager.exec_in_container(&container_id, &["echo", "hello world"]).await.unwrap();
 
     assert_eq!(exit_code, 0);
     assert!(stdout.trim().contains("hello world"));
@@ -64,10 +62,8 @@ async fn test_exec_failing_command() {
 
     let container_id = manager.create_container("fail-test").await.unwrap();
 
-    let (exit_code, _stdout, _stderr) = manager
-        .exec_in_container(&container_id, &["bash", "-c", "exit 42"])
-        .await
-        .unwrap();
+    let (exit_code, _stdout, _stderr) =
+        manager.exec_in_container(&container_id, &["bash", "-c", "exit 42"]).await.unwrap();
 
     assert_eq!(exit_code, 42);
 
@@ -90,10 +86,8 @@ async fn test_container_environment_vars() {
     let container_id = manager.create_container("env-test").await.unwrap();
 
     // Check that our custom env var is set
-    let (exit_code, stdout, _stderr) = manager
-        .exec_in_container(&container_id, &["bash", "-c", "echo $TEST_VAR"])
-        .await
-        .unwrap();
+    let (exit_code, stdout, _stderr) =
+        manager.exec_in_container(&container_id, &["bash", "-c", "echo $TEST_VAR"]).await.unwrap();
 
     assert_eq!(exit_code, 0);
     assert!(stdout.trim().contains("test_value"));
@@ -138,8 +132,5 @@ async fn test_container_cleanup_nonexistent() {
     let manager = ContainerManager::new(config);
 
     // Cleanup a nonexistent container — should not error
-    manager
-        .cleanup_container("nonexistent-container-12345")
-        .await
-        .unwrap();
+    manager.cleanup_container("nonexistent-container-12345").await.unwrap();
 }

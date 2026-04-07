@@ -6,6 +6,10 @@ use tempfile::TempDir;
 
 /// Get the path to the compiled binary
 pub fn binary_path() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_automated_flywheel_setup_checker") {
+        return PathBuf::from(path);
+    }
+
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("target");
     path.push("debug");
@@ -16,10 +20,7 @@ pub fn binary_path() -> PathBuf {
 /// Run the checker binary with arguments
 pub fn run_checker(args: &[&str]) -> Output {
     let binary = binary_path();
-    Command::new(&binary)
-        .args(args)
-        .output()
-        .expect("Failed to execute binary")
+    Command::new(&binary).args(args).output().expect("Failed to execute binary")
 }
 
 /// Run checker and capture stdout as string

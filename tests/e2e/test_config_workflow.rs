@@ -19,11 +19,17 @@ fn test_config_default_creation() {
     assert!(config.docker.timeout_seconds > 0, "Timeout should be positive");
     assert!(config.execution.parallel >= 1, "Parallel should be at least 1");
     assert_eq!(config.general.log_level, "info", "Default log level should be info");
+    assert!(!config.notifications.enabled, "Notifications should default to disabled");
+    assert_eq!(config.monitoring.health_port, 8080, "Health endpoint port should default to 8080");
+    assert_eq!(
+        config.watchdog.default_interval_seconds, 120,
+        "Watchdog interval should default to 120 seconds"
+    );
 }
 
 #[test]
 fn test_config_from_toml_file() {
-    let toml_content = r#"
+    let toml_content = r##"
 [general]
 acfs_repo = "/custom/path"
 log_level = "debug"
@@ -45,7 +51,26 @@ enabled = true
 auto_commit = false
 create_pr = true
 max_attempts = 5
-"#;
+
+[notifications]
+enabled = true
+slack_webhook_env = "SLACK_WEBHOOK_URL"
+slack_channel = "#ops-alerts"
+github_token_env = "GITHUB_TOKEN"
+github_issue_repo = "owner/repo"
+notify_on_failure = true
+notify_on_success = false
+
+[monitoring]
+health_endpoint = true
+health_port = 8081
+metrics_enabled = true
+metrics_port = 9191
+
+[watchdog]
+default_interval_seconds = 180
+log_pings = true
+"##;
 
     let (_dir, path) = create_temp_config(toml_content);
     let config = load_config(Some(&path)).expect("Should parse config");
@@ -54,6 +79,15 @@ max_attempts = 5
     assert_eq!(config.docker.timeout_seconds, 600);
     assert_eq!(config.execution.parallel, 4);
     assert!(config.remediation.enabled);
+    assert!(config.notifications.enabled);
+    assert_eq!(config.notifications.slack_webhook_env, "SLACK_WEBHOOK_URL");
+    assert_eq!(config.notifications.slack_channel, "#ops-alerts");
+    assert_eq!(config.notifications.github_token_env, "GITHUB_TOKEN");
+    assert_eq!(config.notifications.github_issue_repo, "owner/repo");
+    assert!(config.notifications.notify_on_failure);
+    assert!(!config.notifications.notify_on_success);
+    assert_eq!(config.monitoring.metrics_port, 9191);
+    assert_eq!(config.watchdog.default_interval_seconds, 180);
 }
 
 #[test]
@@ -131,6 +165,9 @@ fn test_config_serialization_roundtrip() {
     assert_eq!(config.docker.image, parsed.docker.image);
     assert_eq!(config.docker.timeout_seconds, parsed.docker.timeout_seconds);
     assert_eq!(config.execution.parallel, parsed.execution.parallel);
+    assert_eq!(config.notifications.enabled, parsed.notifications.enabled);
+    assert_eq!(config.monitoring.metrics_port, parsed.monitoring.metrics_port);
+    assert_eq!(config.watchdog.default_interval_seconds, parsed.watchdog.default_interval_seconds);
 }
 
 #[test]

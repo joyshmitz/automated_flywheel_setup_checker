@@ -48,7 +48,10 @@ installers:
 
     let zoxide = &checksums.installers["zoxide"];
     assert!(zoxide.enabled);
-    assert_eq!(zoxide.sha256.as_deref(), Some("abc123def456789012345678901234567890123456789012345678901234"));
+    assert_eq!(
+        zoxide.sha256.as_deref(),
+        Some("abc123def456789012345678901234567890123456789012345678901234")
+    );
     assert_eq!(zoxide.tags.len(), 2);
     assert!(zoxide.tags.contains(&"shell".to_string()));
 }

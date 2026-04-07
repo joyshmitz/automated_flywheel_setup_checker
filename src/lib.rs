@@ -10,6 +10,7 @@ pub mod parser;
 pub mod remediation;
 pub mod reporting;
 pub mod runner;
+pub mod server;
 pub mod watchdog;
 
 pub use config::Config;

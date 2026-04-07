@@ -94,9 +94,9 @@ pub struct UrlCheckResult {
 ///
 /// Makes HTTP HEAD requests to each installer URL with a concurrency limit.
 pub async fn check_urls(checksums: &ChecksumsFile) -> Vec<UrlCheckResult> {
+    use std::sync::Arc;
     use std::time::Instant;
     use tokio::sync::Semaphore;
-    use std::sync::Arc;
 
     let semaphore = Arc::new(Semaphore::new(10)); // 10 concurrent requests
     let client = reqwest::Client::builder()

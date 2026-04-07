@@ -135,7 +135,8 @@ fn test_installer_test_with_sha256() {
 
 #[test]
 fn test_installer_test_with_script_path() {
-    let test = InstallerTest::new("test", "https://example.com").with_script_path("/tmp/install.sh");
+    let test =
+        InstallerTest::new("test", "https://example.com").with_script_path("/tmp/install.sh");
     assert_eq!(test.script_path, Some("/tmp/install.sh".to_string()));
 }
 
@@ -379,10 +380,7 @@ fn test_installer_test_no_dry_run_in_default_config() {
     // Verify that when dry_run is false (the default), the runner would NOT
     // pass --dry-run to installer scripts
     let config = automated_flywheel_setup_checker::runner::RunnerConfig::default();
-    assert!(
-        !config.dry_run,
-        "Default config must not pass --dry-run to installer scripts"
-    );
+    assert!(!config.dry_run, "Default config must not pass --dry-run to installer scripts");
 }
 
 // ============================================================================
@@ -441,8 +439,7 @@ fn test_sha256_none_skips_verification() {
 
 #[test]
 fn test_installer_test_with_sha256_sets_expected() {
-    let test =
-        InstallerTest::new("test", "https://example.com").with_sha256("deadbeef01234567");
+    let test = InstallerTest::new("test", "https://example.com").with_sha256("deadbeef01234567");
     assert_eq!(test.expected_sha256, Some("deadbeef01234567".to_string()));
 }
 
@@ -467,20 +464,14 @@ fn test_execution_backend_local() {
 
 #[test]
 fn test_parallel_runner_max_parallel() {
-    let config = RunnerConfig {
-        backend: ExecutionBackend::Local,
-        ..Default::default()
-    };
+    let config = RunnerConfig { backend: ExecutionBackend::Local, ..Default::default() };
     let runner = ParallelRunner::new(8, config);
     assert_eq!(runner.max_parallel(), 8);
 }
 
 #[tokio::test]
 async fn test_parallel_runner_empty_tests() {
-    let config = RunnerConfig {
-        backend: ExecutionBackend::Local,
-        ..Default::default()
-    };
+    let config = RunnerConfig { backend: ExecutionBackend::Local, ..Default::default() };
     let runner = ParallelRunner::new(4, config);
     let results = runner.run_all(vec![]).await.unwrap();
     assert!(results.is_empty());
@@ -488,10 +479,7 @@ async fn test_parallel_runner_empty_tests() {
 
 #[test]
 fn test_parallel_runner_fail_fast_config() {
-    let config = RunnerConfig {
-        backend: ExecutionBackend::Local,
-        ..Default::default()
-    };
+    let config = RunnerConfig { backend: ExecutionBackend::Local, ..Default::default() };
     let runner = ParallelRunner::new(4, config).with_fail_fast(true);
     // Just verify it can be constructed
     assert_eq!(runner.max_parallel(), 4);

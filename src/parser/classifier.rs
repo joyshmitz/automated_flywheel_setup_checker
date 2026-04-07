@@ -48,7 +48,9 @@ pub fn classify_error(stderr: &str, exit_code: i32) -> ErrorClassification {
         return ErrorClassification {
             severity: ErrorSeverity::Configuration,
             category: "checksum_mismatch".to_string(),
-            suggestion: Some("Update checksums.yaml with new hash or verify installer integrity".to_string()),
+            suggestion: Some(
+                "Update checksums.yaml with new hash or verify installer integrity".to_string(),
+            ),
             retryable: false,
             confidence: 0.95,
         };
@@ -134,11 +136,7 @@ pub fn classify_error(stderr: &str, exit_code: i32) -> ErrorClassification {
 }
 
 fn is_syntax_error(stderr: &str) -> bool {
-    let patterns = [
-        r"(?i)syntax error",
-        r"(?i)unexpected token",
-        r"(?i)parse error",
-    ];
+    let patterns = [r"(?i)syntax error", r"(?i)unexpected token", r"(?i)parse error"];
 
     patterns.iter().any(|p| Regex::new(p).map(|re| re.is_match(stderr)).unwrap_or(false))
 }
@@ -151,9 +149,7 @@ fn is_bootstrap_mismatch(stderr: &str) -> bool {
         r"(?i)expected.*bootstrap.*actual",
     ];
 
-    patterns
-        .iter()
-        .any(|p| Regex::new(p).map(|re| re.is_match(stderr)).unwrap_or(false))
+    patterns.iter().any(|p| Regex::new(p).map(|re| re.is_match(stderr)).unwrap_or(false))
 }
 
 fn is_checksum_mismatch(stderr: &str) -> bool {
@@ -167,9 +163,7 @@ fn is_checksum_mismatch(stderr: &str) -> bool {
         r"(?i)integrity.*check.*failed",
     ];
 
-    patterns
-        .iter()
-        .any(|p| Regex::new(p).map(|re| re.is_match(stderr)).unwrap_or(false))
+    patterns.iter().any(|p| Regex::new(p).map(|re| re.is_match(stderr)).unwrap_or(false))
 }
 
 fn is_network_error(stderr: &str) -> bool {
@@ -188,9 +182,7 @@ fn is_network_error(stderr: &str) -> bool {
         r"(?i)apt.*lock",
     ];
 
-    patterns
-        .iter()
-        .any(|p| Regex::new(p).map(|re| re.is_match(stderr)).unwrap_or(false))
+    patterns.iter().any(|p| Regex::new(p).map(|re| re.is_match(stderr)).unwrap_or(false))
 }
 
 fn is_permission_error(stderr: &str) -> bool {

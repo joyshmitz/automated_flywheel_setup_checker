@@ -20,10 +20,7 @@ use super::installer::{ChecksumResult, InstallerTest, TestResult, TestStatus};
 #[derive(Debug, Clone)]
 pub enum ExecutionBackend {
     /// Run installers inside Docker containers (default, recommended)
-    Docker {
-        container_config: ContainerConfig,
-        pull_policy: PullPolicy,
-    },
+    Docker { container_config: ContainerConfig, pull_policy: PullPolicy },
     /// Run installers locally in temp directories (fallback)
     Local,
 }
@@ -224,8 +221,7 @@ fi
         }
 
         // Create container manager and container
-        let manager =
-            ContainerManager::new(config).with_pull_policy(pull_policy.clone());
+        let manager = ContainerManager::new(config).with_pull_policy(pull_policy.clone());
 
         let container_id = manager
             .create_container(&test.name)
@@ -468,12 +464,7 @@ fi
         let curl_bash_script = if test.expected_sha256.is_some() {
             let script_file = temp_path.join(format!("installer_{}.sh", test.name));
             let dry_run_flag = if self.config.dry_run { " --dry-run" } else { "" };
-            format!(
-                "{} '{}'{}",
-                self.config.bash_path,
-                script_file.display(),
-                dry_run_flag
-            )
+            format!("{} '{}'{}", self.config.bash_path, script_file.display(), dry_run_flag)
         } else {
             self.build_verified_install_script(&test.url, &test.name, None)
         };
@@ -490,10 +481,7 @@ fi
             .env("XDG_CONFIG_HOME", temp_path.join(".config"))
             .env("XDG_DATA_HOME", temp_path.join(".local/share"))
             .env("XDG_CACHE_HOME", temp_path.join(".cache"))
-            .env(
-                "PATH",
-                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            )
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
             .env("DEBIAN_FRONTEND", "noninteractive")
             .env("NONINTERACTIVE", "1")
             .env("CI", "true")
@@ -655,19 +643,13 @@ mod tests {
 
     #[test]
     fn test_runner_config_local_backend() {
-        let config = RunnerConfig {
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config = RunnerConfig { backend: ExecutionBackend::Local, ..Default::default() };
         assert!(matches!(config.backend, ExecutionBackend::Local));
     }
 
     #[test]
     fn test_backoff_calculation() {
-        let config = RunnerConfig {
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config = RunnerConfig { backend: ExecutionBackend::Local, ..Default::default() };
         let runner = InstallerTestRunner::new(config);
 
         let backoff1 = runner.calculate_backoff(1);
@@ -681,13 +663,11 @@ mod tests {
     fn test_dry_run_false_does_not_append_flag() {
         // Regression (br-74o.13): When dry_run is false, the curl|bash command
         // must NOT contain --dry-run.
-        let config = RunnerConfig {
-            dry_run: false,
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config =
+            RunnerConfig { dry_run: false, backend: ExecutionBackend::Local, ..Default::default() };
         let runner = InstallerTestRunner::new(config);
-        let cmd = runner.build_verified_install_script("https://example.com/install.sh", "test", None);
+        let cmd =
+            runner.build_verified_install_script("https://example.com/install.sh", "test", None);
         assert!(
             !cmd.contains("--dry-run"),
             "Command must not contain --dry-run when dry_run=false"
@@ -696,28 +676,21 @@ mod tests {
 
     #[test]
     fn test_dry_run_true_appends_flag() {
-        let config = RunnerConfig {
-            dry_run: true,
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config =
+            RunnerConfig { dry_run: true, backend: ExecutionBackend::Local, ..Default::default() };
         let runner = InstallerTestRunner::new(config);
-        let cmd = runner.build_verified_install_script("https://example.com/install.sh", "test", None);
-        assert!(
-            cmd.contains("--dry-run"),
-            "Command must contain --dry-run when dry_run=true"
-        );
+        let cmd =
+            runner.build_verified_install_script("https://example.com/install.sh", "test", None);
+        assert!(cmd.contains("--dry-run"), "Command must contain --dry-run when dry_run=true");
     }
 
     #[test]
     fn test_build_install_command_format() {
-        let config = RunnerConfig {
-            dry_run: false,
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config =
+            RunnerConfig { dry_run: false, backend: ExecutionBackend::Local, ..Default::default() };
         let runner = InstallerTestRunner::new(config);
-        let cmd = runner.build_verified_install_script("https://example.com/install.sh", "test", None);
+        let cmd =
+            runner.build_verified_install_script("https://example.com/install.sh", "test", None);
         assert!(cmd.contains("curl -fsSL"));
         assert!(cmd.contains("https://example.com/install.sh"));
         assert!(cmd.contains("| bash -s --"));
@@ -725,11 +698,8 @@ mod tests {
 
     #[test]
     fn test_build_verified_script_with_checksum() {
-        let config = RunnerConfig {
-            dry_run: false,
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config =
+            RunnerConfig { dry_run: false, backend: ExecutionBackend::Local, ..Default::default() };
         let runner = InstallerTestRunner::new(config);
         let cmd = runner.build_verified_install_script(
             "https://example.com/install.sh",
@@ -748,11 +718,8 @@ mod tests {
 
     #[test]
     fn test_build_verified_script_without_checksum() {
-        let config = RunnerConfig {
-            dry_run: false,
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config =
+            RunnerConfig { dry_run: false, backend: ExecutionBackend::Local, ..Default::default() };
         let runner = InstallerTestRunner::new(config);
         let cmd = runner.build_verified_install_script(
             "https://example.com/install.sh",
@@ -766,11 +733,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_runner_local_with_simple_command() {
-        let config = RunnerConfig {
-            dry_run: false,
-            backend: ExecutionBackend::Local,
-            ..Default::default()
-        };
+        let config =
+            RunnerConfig { dry_run: false, backend: ExecutionBackend::Local, ..Default::default() };
         let runner = InstallerTestRunner::new(config);
 
         let test = InstallerTest::new("test-echo", "https://example.com/nonexistent.sh")

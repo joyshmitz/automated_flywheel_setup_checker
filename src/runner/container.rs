@@ -70,11 +70,7 @@ impl ContainerManager {
     pub fn new(config: ContainerConfig) -> Self {
         let docker =
             Docker::connect_with_local_defaults().expect("Failed to connect to Docker daemon");
-        Self {
-            config,
-            docker: Arc::new(docker),
-            pull_policy: PullPolicy::IfNotPresent,
-        }
+        Self { config, docker: Arc::new(docker), pull_policy: PullPolicy::IfNotPresent }
     }
 
     /// Create with a specific pull policy
@@ -85,11 +81,7 @@ impl ContainerManager {
 
     /// Create with an existing Docker client (useful for testing)
     pub fn with_docker(config: ContainerConfig, docker: Docker) -> Self {
-        Self {
-            config,
-            docker: Arc::new(docker),
-            pull_policy: PullPolicy::IfNotPresent,
-        }
+        Self { config, docker: Arc::new(docker), pull_policy: PullPolicy::IfNotPresent }
     }
 
     /// Pull the Docker image if required by the pull policy
@@ -344,8 +336,7 @@ impl ContainerManager {
         }
 
         // Force remove
-        let remove_opts =
-            RemoveContainerOptions { force: true, v: true, ..Default::default() };
+        let remove_opts = RemoveContainerOptions { force: true, v: true, ..Default::default() };
         if let Err(e) = self.docker.remove_container(container_id, Some(remove_opts)).await {
             error!(
                 container_id = %container_id,
@@ -408,8 +399,7 @@ impl ContainerGuard {
             );
         }
 
-        let remove_opts =
-            RemoveContainerOptions { force: true, v: true, ..Default::default() };
+        let remove_opts = RemoveContainerOptions { force: true, v: true, ..Default::default() };
         if let Err(e) = self.docker.remove_container(&self.container_id, Some(remove_opts)).await {
             error!(
                 container_id = %self.container_id,
@@ -428,18 +418,13 @@ impl Drop for ContainerGuard {
             // Spawn a blocking task to clean up the container
             // This is best-effort; if the runtime is shutting down it may not complete
             std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build();
+                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
                 if let Ok(rt) = rt {
                     rt.block_on(async {
                         let stop_opts = StopContainerOptions { t: 5 };
                         let _ = docker.stop_container(&container_id, Some(stop_opts)).await;
-                        let remove_opts = RemoveContainerOptions {
-                            force: true,
-                            v: true,
-                            ..Default::default()
-                        };
+                        let remove_opts =
+                            RemoveContainerOptions { force: true, v: true, ..Default::default() };
                         let _ = docker.remove_container(&container_id, Some(remove_opts)).await;
                     });
                 }

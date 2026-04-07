@@ -22,6 +22,7 @@ pub enum OutputFormat {
     Human,
     Json,
     Jsonl,
+    Prometheus,
 }
 
 /// Automated ACFS installer verification system
@@ -80,6 +81,17 @@ enum Commands {
         /// Run locally instead of in Docker containers
         #[arg(long)]
         local: bool,
+    },
+
+    /// Serve monitoring health and metrics endpoints
+    Serve {
+        /// Port override for the shared monitoring listener
+        #[arg(long)]
+        health_port: Option<u16>,
+
+        /// Metrics port override when running in metrics-only mode
+        #[arg(long)]
+        metrics_port: Option<u16>,
     },
 
     /// List known installers from checksums.yaml
@@ -147,18 +159,18 @@ async fn main() -> Result<()> {
     // Initialize logging
     automated_flywheel_setup_checker::logging::init(cli.verbose);
 
+    // Load configuration before constructing subsystems that use config fallbacks.
+    let config = load_config(cli.config.as_deref())?;
+
     // Initialize systemd watchdog if enabled
     let watchdog = if cli.watchdog {
-        let wd = Arc::new(SystemdWatchdog::new());
+        let wd = Arc::new(SystemdWatchdog::new().with_config(&config.watchdog));
         // Start watchdog ping task
         let _watchdog_handle = wd.clone().start();
         Some(wd)
     } else {
         None
     };
-
-    // Load configuration
-    let config = load_config(cli.config.as_deref())?;
 
     // Notify systemd we're ready to accept requests
     if let Some(ref wd) = watchdog {
@@ -181,6 +193,12 @@ async fn run_command(
     config: &automated_flywheel_setup_checker::Config,
     watchdog: Option<&Arc<SystemdWatchdog>>,
 ) -> Result<()> {
+    if matches!(cli.format, OutputFormat::Prometheus)
+        && !matches!(&cli.command, Commands::Status { .. })
+    {
+        anyhow::bail!("--format prometheus is only supported for the status command");
+    }
+
     match &cli.command {
         Commands::Check { installers, parallel, timeout, dry_run, remediate, fail_fast, local } => {
             if let Some(wd) = watchdog {
@@ -198,6 +216,10 @@ async fn run_command(
                 cli.format,
             )
             .await?;
+        }
+
+        Commands::Serve { health_port, metrics_port } => {
+            cmd_serve(&config.monitoring, *health_port, *metrics_port, watchdog).await?;
         }
 
         Commands::List { enabled_only, tag } => {
@@ -224,6 +246,24 @@ async fn run_command(
     Ok(())
 }
 
+async fn cmd_serve(
+    monitoring: &automated_flywheel_setup_checker::config::MonitoringConfig,
+    health_port: Option<u16>,
+    metrics_port: Option<u16>,
+    watchdog: Option<&Arc<SystemdWatchdog>>,
+) -> Result<()> {
+    if let Some(wd) = watchdog {
+        wd.notify_status("Serving monitoring endpoints");
+    }
+
+    automated_flywheel_setup_checker::server::serve_monitoring(
+        monitoring,
+        health_port,
+        metrics_port,
+    )
+    .await
+}
+
 async fn cmd_check(
     config: &automated_flywheel_setup_checker::Config,
     installers: Vec<String>,
@@ -237,6 +277,7 @@ async fn cmd_check(
 ) -> Result<()> {
     use std::time::Duration;
 
+    let command_started_at = chrono::Utc::now();
     let checksums_path = config.general.acfs_repo.join("checksums.yaml");
 
     if !checksums_path.exists() {
@@ -271,7 +312,7 @@ async fn cmd_check(
                     }
                 }
             }
-            OutputFormat::Json | OutputFormat::Jsonl => {
+            OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Prometheus => {
                 let output = serde_json::json!({
                     "dry_run": true,
                     "installers": enabled.iter().map(|(n, _)| n).collect::<Vec<_>>(),
@@ -318,8 +359,8 @@ async fn cmd_check(
         .filter_map(|(name, entry)| {
             // Skip entries without URLs
             let url = entry.url.as_ref()?;
-            let mut test = InstallerTest::new(name.as_str(), url)
-                .with_timeout(Duration::from_secs(timeout));
+            let mut test =
+                InstallerTest::new(name.as_str(), url).with_timeout(Duration::from_secs(timeout));
 
             // Add checksum if available
             if let Some(sha256) = &entry.sha256 {
@@ -357,23 +398,16 @@ async fn cmd_check(
                 let status_icon = if result.success { "\u{2713}" } else { "\u{2717}" };
                 println!(
                     "{} {} ({:?}, {}ms)",
-                    status_icon,
-                    result.installer_name,
-                    result.status,
-                    result.duration_ms
+                    status_icon, result.installer_name, result.status, result.duration_ms
                 );
                 if !result.success && !result.stderr.is_empty() {
-                    let stderr_preview: String = result
-                        .stderr
-                        .lines()
-                        .take(3)
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let stderr_preview: String =
+                        result.stderr.lines().take(3).collect::<Vec<_>>().join("\n");
                     println!("    stderr: {}", stderr_preview);
                 }
             }
             OutputFormat::Json => {}
-            OutputFormat::Jsonl => {
+            OutputFormat::Jsonl | OutputFormat::Prometheus => {
                 println!("{}", serde_json::to_string(&result)?);
             }
         }
@@ -403,7 +437,7 @@ async fn cmd_check(
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
-        OutputFormat::Jsonl => {
+        OutputFormat::Jsonl | OutputFormat::Prometheus => {
             // Already printed per result
         }
     }
@@ -424,8 +458,7 @@ async fn cmd_check(
             timeout_seconds: 120,
             ..Default::default()
         };
-        let remediation =
-            ClaudeRemediation::new(config.general.acfs_repo.clone(), rem_config);
+        let remediation = ClaudeRemediation::new(config.general.acfs_repo.clone(), rem_config);
 
         for result in results.iter().filter(|r| !r.success) {
             // Classify the error if not already done
@@ -435,11 +468,8 @@ async fn cmd_check(
                     result.exit_code.unwrap_or(-1),
                 )
             });
-            let prompt = generate_prompt(
-                &classification,
-                &result.stderr,
-                &config.general.acfs_repo,
-            );
+            let prompt =
+                generate_prompt(&classification, &result.stderr, &config.general.acfs_repo);
 
             match remediation.execute_with_resilience(&prompt).await {
                 Ok(rem_result) => {
@@ -447,27 +477,35 @@ async fn cmd_check(
                         let status = if rem_result.success { "succeeded" } else { "partial" };
                         println!(
                             "\n  Remediation {} for {} (method: {:?}, cost: ${:.4})",
-                            status, result.installer_name, rem_result.method, rem_result.estimated_cost_usd
+                            status,
+                            result.installer_name,
+                            rem_result.method,
+                            rem_result.estimated_cost_usd
                         );
                         if !rem_result.changes_made.is_empty() {
                             println!("  Files to modify:");
                             for change in &rem_result.changes_made {
-                                println!("    - {} ({:?})", change.path.display(), change.change_type);
+                                println!(
+                                    "    - {} ({:?})",
+                                    change.path.display(),
+                                    change.change_type
+                                );
                             }
                         }
                         if !rem_result.claude_output.is_empty() {
-                            let preview: String = rem_result.claude_output.lines().take(5)
-                                .collect::<Vec<_>>().join("\n    ");
+                            let preview: String = rem_result
+                                .claude_output
+                                .lines()
+                                .take(5)
+                                .collect::<Vec<_>>()
+                                .join("\n    ");
                             println!("  Output: {}", preview);
                         }
                     }
                 }
                 Err(e) => {
                     if matches!(format, OutputFormat::Human) {
-                        println!(
-                            "  Remediation failed for {}: {}",
-                            result.installer_name, e
-                        );
+                        println!("  Remediation failed for {}: {}", result.installer_name, e);
                     }
                 }
             }
@@ -476,7 +514,7 @@ async fn cmd_check(
 
     // Persist results to JSONL file
     let run_id = uuid::Uuid::new_v4().to_string();
-    let started_at = results.first().map(|r| r.started_at).unwrap_or_else(chrono::Utc::now);
+    let started_at = results.first().map(|r| r.started_at).unwrap_or(command_started_at);
     let persister = automated_flywheel_setup_checker::reporting::ResultPersister::default_dir();
     match persister.persist(&results, &run_id, started_at) {
         Ok(path) => {
@@ -486,6 +524,25 @@ async fn cmd_check(
         }
         Err(e) => {
             eprintln!("Warning: failed to persist results: {}", e);
+        }
+    }
+
+    match persist_metrics_snapshot(&results, remediate && any_failed, started_at) {
+        Ok(path) => {
+            tracing::debug!(path = %path.display(), "Metrics snapshot updated");
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to persist metrics snapshot");
+        }
+    }
+
+    if config.notifications.enabled {
+        let notifier = automated_flywheel_setup_checker::reporting::Notifier::new(
+            config.notifications.to_internal(),
+        );
+        let (title, body) = build_notification_summary(&results, &run_id, started_at);
+        if let Err(error) = notifier.notify(&title, &body, any_failed).await {
+            tracing::warn!(error = %error, "Notification delivery failed");
         }
     }
 
@@ -555,7 +612,7 @@ fn cmd_list(
                 .collect();
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
-        OutputFormat::Jsonl => {
+        OutputFormat::Jsonl | OutputFormat::Prometheus => {
             for (name, entry) in &filtered {
                 let output = serde_json::json!({
                     "name": name,
@@ -573,7 +630,17 @@ fn cmd_list(
 }
 
 fn cmd_status(detailed: bool, format: OutputFormat) -> Result<()> {
-    use automated_flywheel_setup_checker::reporting::ResultPersister;
+    use automated_flywheel_setup_checker::reporting::{
+        MetricsExporter, MetricsSnapshot, ResultPersister,
+    };
+
+    if matches!(format, OutputFormat::Prometheus) {
+        let mut snapshot = MetricsSnapshot::load_or_default(&MetricsSnapshot::default_path());
+        snapshot.reset_if_stale();
+        let exporter = MetricsExporter::from_snapshot("afsc", &snapshot);
+        print!("{}", exporter.export());
+        return Ok(());
+    }
 
     let persister = ResultPersister::default_dir();
 
@@ -585,7 +652,7 @@ fn cmd_status(detailed: bool, format: OutputFormat) -> Result<()> {
                 OutputFormat::Human => {
                     println!("No runs found. Run: automated_flywheel_setup_checker check");
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => {
+                OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Prometheus => {
                     let output = serde_json::json!({
                         "status": "no_runs",
                         "message": "No runs recorded yet"
@@ -602,12 +669,20 @@ fn cmd_status(detailed: bool, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Human => {
             if let Some(ref s) = summary {
-                println!("Last run: {} ({} total, {} passed, {} failed, {} skipped)",
+                println!(
+                    "Last run: {} ({} total, {} passed, {} failed, {} skipped)",
                     s.run_id.chars().take(8).collect::<String>(),
-                    s.total, s.passed, s.failed, s.skipped);
+                    s.total,
+                    s.passed,
+                    s.failed,
+                    s.skipped
+                );
                 println!("Duration: {}ms", s.duration_total_ms);
-                println!("Time: {} - {}", s.timestamp_start.format("%Y-%m-%d %H:%M:%S"),
-                    s.timestamp_end.format("%H:%M:%S"));
+                println!(
+                    "Time: {} - {}",
+                    s.timestamp_start.format("%Y-%m-%d %H:%M:%S"),
+                    s.timestamp_end.format("%H:%M:%S")
+                );
                 println!();
             }
 
@@ -620,20 +695,33 @@ fn cmd_status(detailed: bool, format: OutputFormat) -> Result<()> {
                     _ => "?",
                 };
                 let checksum = if entry.sha256_verified { " sha256" } else { "" };
-                println!("  {} {} ({}ms{}){}",
-                    icon, entry.installer_name, entry.duration_ms,
-                    if entry.retry_count > 0 { format!(", {} retries", entry.retry_count) } else { String::new() },
-                    checksum);
+                println!(
+                    "  {} {} ({}ms{}){}",
+                    icon,
+                    entry.installer_name,
+                    entry.duration_ms,
+                    if entry.retry_count > 0 {
+                        format!(", {} retries", entry.retry_count)
+                    } else {
+                        String::new()
+                    },
+                    checksum
+                );
 
                 if detailed && !entry.stderr_excerpt.is_empty() && entry.status != "passed" {
-                    let preview: String = entry.stderr_excerpt.lines().take(3)
-                        .collect::<Vec<_>>().join("\n      ");
+                    let preview: String =
+                        entry.stderr_excerpt.lines().take(3).collect::<Vec<_>>().join("\n      ");
                     println!("      stderr: {}", preview);
                 }
                 if detailed {
                     if let Some(ref ec) = entry.error_classification {
-                        println!("      error: {} ({}, retryable={}, confidence={:.0}%)",
-                            ec.category, ec.severity, ec.retryable, ec.confidence * 100.0);
+                        println!(
+                            "      error: {} ({}, retryable={}, confidence={:.0}%)",
+                            ec.category,
+                            ec.severity,
+                            ec.retryable,
+                            ec.confidence * 100.0
+                        );
                     }
                 }
             }
@@ -648,7 +736,7 @@ fn cmd_status(detailed: bool, format: OutputFormat) -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
-        OutputFormat::Jsonl => {
+        OutputFormat::Jsonl | OutputFormat::Prometheus => {
             for entry in &entries {
                 println!("{}", serde_json::to_string(entry)?);
             }
@@ -695,7 +783,7 @@ async fn cmd_validate(
                 }
             }
         }
-        OutputFormat::Json | OutputFormat::Jsonl => {
+        OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Prometheus => {
             let output = serde_json::json!({
                 "valid": result.valid,
                 "errors": result.errors.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
@@ -728,11 +816,8 @@ async fn cmd_validate(
                         .status
                         .map(|s| format!("HTTP {}", s))
                         .unwrap_or_else(|| "error".to_string());
-                    let error_str = r
-                        .error
-                        .as_ref()
-                        .map(|e| format!(" ({})", e))
-                        .unwrap_or_default();
+                    let error_str =
+                        r.error.as_ref().map(|e| format!(" ({})", e)).unwrap_or_default();
                     println!(
                         "  {} {} - {} {}ms{}",
                         icon, r.name, status_str, r.response_time_ms, error_str
@@ -757,7 +842,7 @@ async fn cmd_validate(
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
             }
-            OutputFormat::Jsonl => {
+            OutputFormat::Jsonl | OutputFormat::Prometheus => {
                 for r in &url_results {
                     println!("{}", serde_json::to_string(r)?);
                 }
@@ -786,7 +871,7 @@ fn cmd_classify_error(stderr: &str, exit_code: i32, format: OutputFormat) -> Res
                 println!("  Suggestion: {}", suggestion);
             }
         }
-        OutputFormat::Json | OutputFormat::Jsonl => {
+        OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Prometheus => {
             println!("{}", serde_json::to_string_pretty(&classification)?);
         }
     }
@@ -803,7 +888,7 @@ fn cmd_config(cmd: ConfigCmd, config_path: &Option<PathBuf>, format: OutputForma
                     println!("Current configuration:");
                     println!("{}", toml::to_string_pretty(&config)?);
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => {
+                OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Prometheus => {
                     println!("{}", serde_json::to_string_pretty(&config)?);
                 }
             }
@@ -815,7 +900,7 @@ fn cmd_config(cmd: ConfigCmd, config_path: &Option<PathBuf>, format: OutputForma
                     println!("Default configuration:");
                     println!("{}", toml::to_string_pretty(&config)?);
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => {
+                OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Prometheus => {
                     println!("{}", serde_json::to_string_pretty(&config)?);
                 }
             }
@@ -853,4 +938,72 @@ fn parse_memory_limit(s: &str) -> Option<u64> {
         (s, 1u64)
     };
     num_str.trim().parse::<u64>().ok().map(|n| n * multiplier)
+}
+
+fn persist_metrics_snapshot(
+    results: &[automated_flywheel_setup_checker::runner::TestResult],
+    remediation_attempted: bool,
+    started_at: chrono::DateTime<chrono::Utc>,
+) -> Result<std::path::PathBuf> {
+    let path = automated_flywheel_setup_checker::reporting::MetricsSnapshot::default_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut snapshot =
+        automated_flywheel_setup_checker::reporting::MetricsSnapshot::load_or_default(&path);
+    snapshot.reset_if_stale();
+
+    for result in results {
+        snapshot.record_test(result.success);
+    }
+
+    if remediation_attempted {
+        snapshot.record_remediation();
+    }
+
+    let uptime_seconds = (chrono::Utc::now() - started_at).num_seconds().max(0) as u64;
+    snapshot.set_uptime(uptime_seconds);
+    snapshot.save(&path)?;
+
+    Ok(path)
+}
+
+fn build_notification_summary(
+    results: &[automated_flywheel_setup_checker::runner::TestResult],
+    run_id: &str,
+    started_at: chrono::DateTime<chrono::Utc>,
+) -> (String, String) {
+    let passed = results.iter().filter(|result| result.success).count();
+    let failed = results.iter().filter(|result| !result.success).count();
+    let total = results.len();
+
+    let title = if failed > 0 {
+        format!("AFSC: {failed} failures in {total} tests")
+    } else {
+        format!("AFSC: {passed}/{total} passed")
+    };
+
+    let mut body = format!(
+        "Run ID: {run_id}\nStarted: {}\nPassed: {passed}\nFailed: {failed}\nTotal: {total}",
+        started_at.to_rfc3339()
+    );
+
+    let failures: Vec<String> = results
+        .iter()
+        .filter(|result| !result.success)
+        .take(5)
+        .map(|result| {
+            let category =
+                result.error.as_ref().map(|error| error.category.as_str()).unwrap_or("unknown");
+            format!("- {} ({category})", result.installer_name)
+        })
+        .collect();
+
+    if !failures.is_empty() {
+        body.push_str("\n\nFailures:\n");
+        body.push_str(&failures.join("\n"));
+    }
+
+    (title, body)
 }

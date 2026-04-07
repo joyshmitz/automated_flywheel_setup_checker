@@ -250,8 +250,7 @@ fn test_jsonl_reporter_with_fsync() {
 #[test]
 fn test_jsonl_reporter_with_buffer_size() {
     let file = NamedTempFile::new().unwrap();
-    let mut reporter =
-        JsonlReporter::new(file.path(), LogLevel::Info).unwrap().with_buffer_size(2);
+    let mut reporter = JsonlReporter::new(file.path(), LogLevel::Info).unwrap().with_buffer_size(2);
 
     // Add entries, should auto-flush at buffer size
     reporter.log(LogEntry::info("test", "event1")).unwrap();
@@ -371,10 +370,8 @@ fn test_summary_generation_all_failed() {
 fn test_summary_generation_with_timeouts() {
     let generator = SummaryGenerator::new("test-run-4");
 
-    let results = vec![
-        TestResult::new("installer1").passed(),
-        TestResult::new("installer2").timed_out(),
-    ];
+    let results =
+        vec![TestResult::new("installer1").passed(), TestResult::new("installer2").timed_out()];
 
     let summary = generator.generate(&results);
 

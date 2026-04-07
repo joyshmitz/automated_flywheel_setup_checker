@@ -30,7 +30,9 @@
 | **Retry with Backoff** | Transient failures (network timeouts, rate limits) are retried automatically |
 | **Claude Auto-Remediation** | Experimental: sends failure context to Claude for fix suggestions |
 | **JSONL Structured Output** | Machine-readable output for CI/CD pipelines and dashboards |
-| **Systemd Watchdog** | Long-running checks integrate with systemd for health monitoring |
+| **Monitoring Server** | `serve` exposes `/health` and `/metrics` from the persisted metrics snapshot |
+| **Prometheus Status Export** | `status --format prometheus` emits scrape-friendly metrics to stdout for one-shot export workflows |
+| **Systemd Watchdog** | Optional readiness, status, and watchdog notifications for long-running `check` and `serve` processes |
 | **Checksum Validation** | Verifies checksums.yaml integrity and URL accessibility |
 
 ---
@@ -44,8 +46,8 @@ automated_flywheel_setup_checker list
 # Validate checksums.yaml format and check all URLs are live
 automated_flywheel_setup_checker validate --check-urls
 
-# Dry run — see what would be tested without actually running containers
-automated_flywheel_setup_checker check --dry-run
+# Dry run locally — see what would be tested without starting Docker containers
+automated_flywheel_setup_checker check --dry-run --local
 
 # Test specific installers
 automated_flywheel_setup_checker check rust nodejs bun
@@ -60,6 +62,12 @@ automated_flywheel_setup_checker classify-error \
 
 # Full run with remediation suggestions, stop on first failure
 automated_flywheel_setup_checker check --remediate --fail-fast --format jsonl
+
+# After enabling [monitoring] in config, serve health and metrics endpoints
+automated_flywheel_setup_checker serve --health-port 8080
+
+# Export the latest metrics snapshot in Prometheus text format
+automated_flywheel_setup_checker status --format prometheus
 ```
 
 ---
@@ -118,7 +126,7 @@ cargo install --git https://github.com/Dicklesworthstone/automated_flywheel_setu
 Global flags available on all commands:
 
 ```bash
---format human|json|jsonl    # Output format (default: human)
+--format human|json|jsonl|prometheus   # prometheus is supported by `status`
 --config PATH                # Config file path (or set ACFS_CONFIG env)
 -v / -vv / -vvv              # Verbosity level
 --watchdog                   # Enable systemd watchdog integration
@@ -177,7 +185,21 @@ automated_flywheel_setup_checker config validate            # Validate config fi
 ```bash
 automated_flywheel_setup_checker status                     # Summary
 automated_flywheel_setup_checker status --detailed          # Full failure info
+automated_flywheel_setup_checker status --format prometheus # Prometheus text output
 ```
+
+### `serve` — Monitoring Endpoints
+
+Runs the monitoring HTTP server and exposes the endpoints enabled in `[monitoring]`. At least one of
+`health_endpoint` or `metrics_enabled` must be enabled.
+
+```bash
+automated_flywheel_setup_checker serve                      # Use ports from config.toml
+automated_flywheel_setup_checker serve --health-port 8081   # Override shared listener port
+automated_flywheel_setup_checker serve --metrics-port 9191  # Override metrics-only listener
+```
+
+`serve` returns an error if both `[monitoring].health_endpoint` and `[monitoring].metrics_enabled` are disabled.
 
 ---
 
@@ -211,20 +233,27 @@ max_attempts = 3         # Max remediation attempts per failure
 
 [notifications]
 enabled = false
-slack_webhook = ""       # Slack webhook URL
+slack_webhook_env = "SLACK_WEBHOOK_URL"  # Env var holding the Slack webhook URL
+slack_channel = ""       # Optional channel override
+github_token_env = "GITHUB_TOKEN"        # Env var holding the GitHub token
 github_issue_repo = ""   # e.g., "Dicklesworthstone/agentic_coding_flywheel_setup"
-email = ""
+notify_on_failure = true
+notify_on_success = false
 
 [monitoring]
-health_endpoint = false  # Expose /health HTTP endpoint
-health_port = 8080
-metrics_enabled = false  # Prometheus-compatible metrics
-metrics_port = 9090
+health_endpoint = false  # Enable GET /health on the monitoring server
+health_port = 8080       # Shared listener port when health is enabled
+metrics_enabled = false  # Enable GET /metrics on the monitoring server
+metrics_port = 9090      # Listener port when serving metrics without /health
 
 [watchdog]
-default_interval_seconds = 120   # Systemd watchdog ping interval
-log_pings = false
+default_interval_seconds = 120  # Fallback interval when systemd env vars are absent
+log_pings = false               # Promote watchdog ping logs from debug to info
 ```
+
+Notification secrets come from environment variables named in `[notifications]`; the config file stores env var names, not the secret values themselves.
+
+Run `automated_flywheel_setup_checker serve` to expose the HTTP monitoring endpoints configured in `[monitoring]`. The monitoring server uses a single listener: if `health_endpoint = true`, it binds `health_port`; otherwise it uses `metrics_port`. If you only need a one-shot scrape target, `automated_flywheel_setup_checker status --format prometheus` prints the same metrics snapshot to stdout.
 
 ---
 
@@ -233,7 +262,7 @@ log_pings = false
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                           CLI (clap)                                │
-│   check | list | validate | classify-error | config | status        │
+│   check | serve | list | validate | classify-error | config | status│
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
               ┌────────────────┼────────────────┐
@@ -354,6 +383,7 @@ The E2E tests require Docker-in-Docker. Ensure the CI workflow has the `docker:d
 - **No post-install validation** — verifies the installer runs successfully but doesn't test that the installed tool actually works correctly.
 - **Single Ubuntu version** — defaults to `ubuntu:22.04`. Testing across multiple Ubuntu versions requires manual config changes.
 - **Local mode available** — use `--local` flag to run installers in temp directories when Docker is unavailable (less isolation but no Docker dependency).
+- **Metrics are snapshot-based** — `serve` and `status --format prometheus` report the persisted metrics snapshot from recent runs; they do not stream live per-installer progress.
 
 ---
 
@@ -384,7 +414,7 @@ Yes. The E2E workflow already demonstrates this. You need a runner with Docker a
 ## Development
 
 ```bash
-# Run unit tests (227 tests, ~0.1s)
+# Run Rust tests (370 total; 6 Docker-dependent E2E cases ignored by default)
 cargo test
 
 # Run with verbose logging

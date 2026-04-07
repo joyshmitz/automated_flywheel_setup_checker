@@ -148,7 +148,8 @@ fn generate_generic_prompt(
     stderr: &str,
     workspace: &Path,
 ) -> String {
-    let suggestion = classification.suggestion.as_deref().unwrap_or("Review the error and fix accordingly");
+    let suggestion =
+        classification.suggestion.as_deref().unwrap_or("Review the error and fix accordingly");
     let workspace_str = workspace.display();
 
     format!(
@@ -166,9 +167,7 @@ Suggested Fix: {suggestion}
 Workspace: {workspace_str}
 
 Please analyze this error and apply the appropriate fix. If you make changes, commit them with a descriptive message."#,
-        classification.category,
-        classification.severity,
-        classification.retryable
+        classification.category, classification.severity, classification.retryable
     )
 }
 
@@ -220,7 +219,8 @@ mod tests {
 
     #[test]
     fn test_bootstrap_mismatch_prompt() {
-        let classification = test_classification("bootstrap_mismatch", ErrorSeverity::Configuration);
+        let classification =
+            test_classification("bootstrap_mismatch", ErrorSeverity::Configuration);
         let prompt = generate_prompt(
             &classification,
             "Bootstrap mismatch: Expected abc123, Actual def456",
@@ -249,11 +249,7 @@ mod tests {
     #[test]
     fn test_network_error_prompt() {
         let classification = test_classification("network", ErrorSeverity::Transient);
-        let prompt = generate_prompt(
-            &classification,
-            "Connection refused",
-            &PathBuf::from("/tmp"),
-        );
+        let prompt = generate_prompt(&classification, "Connection refused", &PathBuf::from("/tmp"));
 
         assert!(prompt.contains("network"));
         assert!(prompt.contains("transient"));
@@ -262,11 +258,8 @@ mod tests {
     #[test]
     fn test_command_not_found_prompt() {
         let classification = test_classification("command_not_found", ErrorSeverity::Dependency);
-        let prompt = generate_prompt(
-            &classification,
-            "bash: jq: command not found",
-            &PathBuf::from("/tmp"),
-        );
+        let prompt =
+            generate_prompt(&classification, "bash: jq: command not found", &PathBuf::from("/tmp"));
 
         assert!(prompt.contains("command is not installed"));
         assert!(prompt.contains("apt"));
@@ -275,11 +268,7 @@ mod tests {
     #[test]
     fn test_unknown_error_fallback() {
         let classification = test_classification("unknown", ErrorSeverity::Unknown);
-        let prompt = generate_prompt(
-            &classification,
-            "Some unknown error",
-            &PathBuf::from("/tmp"),
-        );
+        let prompt = generate_prompt(&classification, "Some unknown error", &PathBuf::from("/tmp"));
 
         assert!(prompt.contains("Error Category: unknown"));
         assert!(prompt.contains("Test suggestion"));
@@ -287,7 +276,8 @@ mod tests {
 
     #[test]
     fn test_dry_run_report() {
-        let classification = test_classification("bootstrap_mismatch", ErrorSeverity::Configuration);
+        let classification =
+            test_classification("bootstrap_mismatch", ErrorSeverity::Configuration);
         let report = generate_dry_run_report(
             &classification,
             "Bootstrap mismatch error",
