@@ -27,7 +27,7 @@ mod tests {
     #[test]
     fn test_load_default_config() {
         let config = load_config(None).unwrap();
-        assert_eq!(config.docker.image, "ubuntu:22.04");
+        assert_eq!(config.docker.image, "afsc-base:latest");
         assert_eq!(config.execution.parallel, 1);
     }
 

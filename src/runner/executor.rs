@@ -242,7 +242,7 @@ set +e
         // Install prerequisite packages if NOT using the pre-built base image.
         // The afsc-base:latest image already has everything pre-installed (Rust, Node,
         // git, unzip, etc.) so we skip this 20-30s step entirely.
-        let using_base_image = container_config.image == "afsc-base:latest";
+        let using_base_image = container_config.image == ContainerManager::AFSC_BASE_IMAGE;
         if !using_base_image {
             debug!(container_id = %container_id, "Installing prerequisites in container (not using base image)");
             let prereq_install_result = timeout(

@@ -23,7 +23,7 @@ fn test_load_default_config() {
         PathBuf::from("/data/projects/agentic_coding_flywheel_setup")
     );
     assert_eq!(config.general.log_level, "info");
-    assert_eq!(config.docker.image, "ubuntu:22.04");
+    assert_eq!(config.docker.image, "afsc-base:latest");
     assert_eq!(config.execution.parallel, 1);
     assert!(!config.remediation.enabled);
 
@@ -48,7 +48,7 @@ fn test_load_default_config() {
 fn test_config_default_trait_roundtrip_basics() {
     let config = Config::default();
 
-    assert_eq!(config.docker.image, "ubuntu:22.04");
+    assert_eq!(config.docker.image, "afsc-base:latest");
     assert_eq!(config.execution.parallel, 1);
     assert!(!config.notifications.enabled);
     assert_eq!(config.monitoring.health_port, 8080);
@@ -234,7 +234,7 @@ slack_webhook_env = "SLACK_WEBHOOK_URL"
     assert!(config.notifications.notify_on_failure);
     assert!(!config.notifications.notify_on_success);
     assert_eq!(config.general.log_level, "info");
-    assert_eq!(config.docker.image, "ubuntu:22.04");
+    assert_eq!(config.docker.image, "afsc-base:latest");
 }
 
 #[test]

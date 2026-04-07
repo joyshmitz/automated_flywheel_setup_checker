@@ -86,7 +86,7 @@ impl ContainerManager {
 
     /// Pull the Docker image if required by the pull policy
     /// The tag used for the pre-built ACFS base image.
-    const AFSC_BASE_IMAGE: &'static str = "afsc-base:latest";
+    pub const AFSC_BASE_IMAGE: &'static str = "afsc-base:latest";
 
     /// Ensure the configured image is available locally.
     ///
