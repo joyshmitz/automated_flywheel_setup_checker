@@ -96,10 +96,12 @@ impl InstallerTestRunner {
         match expected_sha256 {
             Some(expected) => {
                 // Download → verify checksum → execute via stdin.
-                // We use `bash -s -- < file` instead of `bash file` so that the script
-                // receives arguments the same way as the curl|bash pipe path. This also
-                // avoids issues with installers (like rustup) that exec binaries from
-                // the script's directory — running via stdin doesn't set $0 to the path.
+                //
+                // CRITICAL: set -e is used ONLY for download+verify. We switch to
+                // set +e before running the installer because installer scripts handle
+                // their own errors internally (e.g., `command -v foo` returning 1 is
+                // normal). With set -e, these benign non-zero exits kill the entire
+                // script, causing false failures.
                 let script_path = format!("/tmp/installer_{}.sh", installer_name);
                 format!(
                     r#"set -e
@@ -109,6 +111,7 @@ if [ "$ACTUAL" != "{expected}" ]; then
   echo "CHECKSUM_MISMATCH: expected={expected} actual=$ACTUAL url={url}" >&2
   exit 99
 fi
+set +e
 {bash} -s --{flags} < '{path}'"#,
                     curl = self.config.curl_path,
                     url = url,
