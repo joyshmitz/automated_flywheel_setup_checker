@@ -139,7 +139,7 @@ fi
         let expected = expected_sha256?;
 
         if exit_code == 99 && stderr.contains("CHECKSUM_MISMATCH") {
-            // Extract actual hash from the error message
+            // Explicit checksum mismatch — extract actual hash from error message
             let actual = stderr
                 .lines()
                 .find(|l| l.contains("CHECKSUM_MISMATCH"))
@@ -156,8 +156,8 @@ fi
                 download_ms,
                 size_bytes: 0,
             })
-        } else {
-            // Checksum passed (or wasn't checked due to download failure)
+        } else if exit_code == 0 {
+            // Script succeeded — checksum was verified and matched
             Some(ChecksumResult {
                 matches: true,
                 expected: expected.to_string(),
@@ -166,6 +166,12 @@ fi
                 download_ms,
                 size_bytes: 0,
             })
+        } else {
+            // Non-zero exit that isn't a checksum mismatch — the script failed
+            // before or after the checksum check (e.g., download error, installer
+            // crash). We can't confirm the checksum was verified, so return None
+            // to indicate the checksum status is unknown.
+            None
         }
     }
 
@@ -230,16 +236,30 @@ fi
         let mut guard = ContainerGuard::new(container_id.clone(), manager.docker_arc());
         result = result.with_container_id(&container_id);
 
-        // Ensure curl is available in the container (ubuntu:22.04 doesn't include it)
+        // Ensure curl is available in the container (ubuntu:22.04 doesn't include it).
+        // Use a separate 120s timeout so a slow apt mirror doesn't consume the test timeout.
         debug!(container_id = %container_id, "Installing curl in container");
-        if let Err(e) = manager
-            .exec_in_container(
+        let curl_install_result = timeout(
+            Duration::from_secs(120),
+            manager.exec_in_container(
                 &container_id,
                 &["bash", "-c", "apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null 2>&1"],
-            )
-            .await
-        {
-            warn!(container_id = %container_id, error = %e, "Failed to install curl in container");
+            ),
+        )
+        .await;
+        match curl_install_result {
+            Ok(Ok((code, _, _))) if code != 0 => {
+                warn!(container_id = %container_id, exit_code = code, "curl installation exited non-zero");
+            }
+            Ok(Err(e)) => {
+                warn!(container_id = %container_id, error = %e, "Failed to install curl in container");
+            }
+            Err(_) => {
+                warn!(container_id = %container_id, "curl installation timed out after 120s");
+            }
+            _ => {
+                debug!(container_id = %container_id, "curl installed successfully");
+            }
         }
 
         // Build the verified install script (download → checksum → execute)
