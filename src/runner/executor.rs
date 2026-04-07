@@ -95,7 +95,11 @@ impl InstallerTestRunner {
 
         match expected_sha256 {
             Some(expected) => {
-                // Download → verify → execute script
+                // Download → verify checksum → execute via stdin.
+                // We use `bash -s -- < file` instead of `bash file` so that the script
+                // receives arguments the same way as the curl|bash pipe path. This also
+                // avoids issues with installers (like rustup) that exec binaries from
+                // the script's directory — running via stdin doesn't set $0 to the path.
                 let script_path = format!("/tmp/installer_{}.sh", installer_name);
                 format!(
                     r#"set -e
@@ -105,7 +109,7 @@ if [ "$ACTUAL" != "{expected}" ]; then
   echo "CHECKSUM_MISMATCH: expected={expected} actual=$ACTUAL url={url}" >&2
   exit 99
 fi
-{bash} '{path}'{flags}"#,
+{bash} -s --{flags} < '{path}'"#,
                     curl = self.config.curl_path,
                     url = url,
                     path = script_path,
@@ -232,29 +236,34 @@ fi
         let mut guard = ContainerGuard::new(container_id.clone(), manager.docker_arc());
         result = result.with_container_id(&container_id);
 
-        // Ensure curl is available in the container (ubuntu:22.04 doesn't include it).
+        // Install prerequisite packages that ACFS installers expect.
+        // The ACFS install.sh pre-installs these before running individual installer scripts.
+        // Without them, installers fail with missing dependency errors (unzip, git, xz, etc.).
         // Use a separate 120s timeout so a slow apt mirror doesn't consume the test timeout.
-        debug!(container_id = %container_id, "Installing curl in container");
-        let curl_install_result = timeout(
+        debug!(container_id = %container_id, "Installing prerequisites in container");
+        let prereq_install_result = timeout(
             Duration::from_secs(120),
             manager.exec_in_container(
                 &container_id,
-                &["bash", "-c", "apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null 2>&1"],
+                &["bash", "-c", "apt-get update -qq && apt-get install -y -qq \
+                    curl ca-certificates git unzip xz-utils tar jq \
+                    build-essential sudo gnupg libssl-dev pkg-config \
+                    zsh >/dev/null 2>&1"],
             ),
         )
         .await;
-        match curl_install_result {
+        match prereq_install_result {
             Ok(Ok((code, _, _))) if code != 0 => {
-                warn!(container_id = %container_id, exit_code = code, "curl installation exited non-zero");
+                warn!(container_id = %container_id, exit_code = code, "Prerequisite installation exited non-zero");
             }
             Ok(Err(e)) => {
-                warn!(container_id = %container_id, error = %e, "Failed to install curl in container");
+                warn!(container_id = %container_id, error = %e, "Failed to install prerequisites in container");
             }
             Err(_) => {
-                warn!(container_id = %container_id, "curl installation timed out after 120s");
+                warn!(container_id = %container_id, "Prerequisite installation timed out after 120s");
             }
             _ => {
-                debug!(container_id = %container_id, "curl installed successfully");
+                debug!(container_id = %container_id, "Prerequisites installed successfully");
             }
         }
 
@@ -460,11 +469,15 @@ fi
 
         // Build the execution command.
         // If we already downloaded and verified the script (checksum path above),
-        // execute the local file directly instead of re-downloading.
+        // execute the local file via stdin instead of re-downloading.
+        // Using `bash -s -- < file` matches the curl|bash pipe behavior.
         let curl_bash_script = if test.expected_sha256.is_some() {
             let script_file = temp_path.join(format!("installer_{}.sh", test.name));
             let dry_run_flag = if self.config.dry_run { " --dry-run" } else { "" };
-            format!("{} '{}'{}", self.config.bash_path, script_file.display(), dry_run_flag)
+            format!(
+                "{} -s --{} < '{}'",
+                self.config.bash_path, dry_run_flag, script_file.display()
+            )
         } else {
             self.build_verified_install_script(&test.url, &test.name, None)
         };
@@ -712,8 +725,10 @@ mod tests {
         assert!(cmd.contains("abc123def456"));
         assert!(cmd.contains("CHECKSUM_MISMATCH"));
         assert!(cmd.contains("exit 99"));
-        // Should NOT contain pipe to bash
+        // Should NOT contain pipe to bash — uses stdin redirect instead
         assert!(!cmd.contains("| bash"));
+        // Should execute via stdin redirect for consistent behavior
+        assert!(cmd.contains("< '/tmp/installer_myinstaller.sh'"));
     }
 
     #[test]
